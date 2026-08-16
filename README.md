@@ -10,7 +10,7 @@
 | --- | --- |
 | **概览** | DeepSeek 账户余额（赠金/充值/已用）+ 官方充值/用量入口；Harness 引擎版本与 npm 最新版对比 |
 | **服务器** | 服务状态（地址 / PID / 运行时长 / 引擎版本）、一键重启、最近日志流式查看 |
-| **远程访问** | Tailscale `serve :3080` 开关、tailnet 域名与访问地址、可信主机（`connection.trustedHosts`）只读审计 |
+| **远程访问** | Tailscale `serve :3080` 开关、tailnet 域名与访问地址、**可信主机编辑**（`connection.trustedHosts` 增删 + 暴露面审计：当前 tailnet 域名是否在信任名单里、一键加入、保存后重启生效） |
 
 > Agent 的模型 / 预设 / 权限等配置仍在 Harness 网页原生的「设置」里；本插件只管**运维面**。
 
@@ -87,13 +87,14 @@ dsh plugin --profile web remove dsh-ops-console
 | DeepSeek API Key | `~/.dsh/.credentials.yaml` | `DEEPSEEK_API_KEY: sk-...`（只用于余额查询，不落盘、不打印；缺失时其余功能不受影响） |
 | 日志文件 | 默认 `~/.dsh/logs/dsh-web.log` | 可用环境变量 `DSH_OPS_LOG` 覆盖 |
 | 引擎版本 | 默认 `0.1.0-rc.6` | 用环境变量 `DSH_OPS_ENGINE` 覆盖为你实际固定运行的 dsh 版本，让「检查更新」对比正确 |
-| 可信主机 | profile 的 `cordis.patch.yml` | 远程 Tab 只读展示 `connection.trustedHosts` |
+| 可信主机 | profile 的 `cordis.patch.yml` | 远程 Tab 增删 `connection.trustedHosts`（含裸 authority 校验），**重启服务后生效** |
 
 ## 使用
 
 1. 打开 `dsh web` → **设置 → 运维控制台**
 2. 概览 Tab 看余额与版本；服务器 Tab 看状态/日志、一键重启；远程访问 Tab 开/关 Tailscale
-3. 手机在 tailnet 内打开 `https://<你的mac>.<tailnet>.ts.net`，同一面板可直接操作
+3. 远程访问 Tab 可增删可信主机：输入 `host` 或 `host:port` 添加（服务端校验裸 authority），删除按钮移除；修改保存在 `cordis.patch.yml`，点「立即重启」让浏览器信任围栏加载新名单
+4. 手机在 tailnet 内打开 `https://<你的mac>.<tailnet>.ts.net`，同一面板可直接操作
 
 ## 架构
 
@@ -104,9 +105,9 @@ dsh plugin --profile web remove dsh-ops-console
 
 ## 安全说明
 
-- 写操作（重启、远程开关）要求**同源 POST**，防止跨站请求伪造。
+- 写操作（重启、远程开关、可信主机增删）要求**同源 POST**，防止跨站请求伪造。
 - 余额读取本地凭据，接口响应不返回任何密钥。
-- 可信主机目前为**只读**展示，避免误改 `cordis.patch.yml` 破坏 profile。
+- 可信主机增删带服务端校验（只接受裸 `host[:port]` authority），写入前先内存回读校验（round-trip），再原子落盘；不匹配即拒绝，不会破坏 `cordis.patch.yml` 其它内容。
 
 ## 开发
 
