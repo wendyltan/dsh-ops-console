@@ -1,0 +1,12 @@
+# Dependencies / build output
+node_modules/
+lib/*.map
+*.tsbuildinfo
+
+# macOS
+.DS_Store
+
+# Editor / local
+*.swp
+.vscode/
+.idea/

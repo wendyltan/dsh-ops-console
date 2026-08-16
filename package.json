@@ -1,0 +1,49 @@
+{
+  "name": "dsh-ops-console",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness 服务器运营控制台：余额/用量、服务器状态与日志、一键重启、引擎版本更新、Tailscale 远程访问开关与可信主机审计。",
+  "type": "module",
+  "main": "lib/index.js",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wendyltan/dsh-ops-console.git"
+  },
+  "homepage": "https://github.com/wendyltan/dsh-ops-console#readme",
+  "keywords": [
+    "deepseek",
+    "harness",
+    "dsh",
+    "dsh-plugin",
+    "ops",
+    "console",
+    "balance",
+    "tailscale"
+  ],
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ]
+}
