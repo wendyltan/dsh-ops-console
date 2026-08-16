@@ -86,6 +86,7 @@ dsh plugin --profile web remove dsh-ops-console
 | --- | --- | --- |
 | DeepSeek API Key | `~/.dsh/.credentials.yaml` | `DEEPSEEK_API_KEY: sk-...`（只用于余额查询，不落盘、不打印；缺失时其余功能不受影响） |
 | 日志文件 | 默认 `~/.dsh/logs/dsh-web.log` | 可用环境变量 `DSH_OPS_LOG` 覆盖 |
+| 引擎版本 | 默认 `0.1.0-rc.6` | 用环境变量 `DSH_OPS_ENGINE` 覆盖为你实际固定运行的 dsh 版本，让「检查更新」对比正确 |
 | 可信主机 | profile 的 `cordis.patch.yml` | 远程 Tab 只读展示 `connection.trustedHosts` |
 
 ## 使用
