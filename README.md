@@ -17,6 +17,8 @@
 
 > 额外：注册了 **6 个 Agent 自运维工具**（`ops_status` / `ops_balance` / `ops_logs` / `ops_tailscale` / `ops_preflight` / `ops_restart`）。重启由 DSH 进程之外的 guardian 执行，先隔离预检，失败时恢复黄金版本或进入安全模式。
 
+> 本插件是可选组件。Guardian 的唯一源码和安装生命周期属于 [dsh-desktop](https://github.com/wendyltan/dsh-desktop)；未安装客户端 Guardian 时，余额、日志、版本、Tailscale 和可信主机功能仍可使用，预检/恢复/安全重启会明确显示不可用，不会降级为裸重启。
+
 > Agent 的模型 / 预设 / 权限等配置仍在 Harness 网页原生的「设置」里；本插件只管**运维面**。
 
 ## 安装
@@ -140,6 +142,8 @@ cd dsh-ops-console
 5. **回滚**：`node scripts/rollback.mjs` 恢复最新内部备份并再次预检；也可从控制台恢复 guardian 的 last-known-good 黄金快照。
 
 > guardian、watchdog 和安全模式运行在 DSH 进程之外。即使 profile 或插件导致 DSH 无法启动，外部恢复链仍然可用。
+
+> `scripts/deploy.mjs` 是本机的增强安全部署流程，因此要求 dsh-desktop Guardian 已安装；普通用户仍可通过 npm、GitHub 或插件市场独立安装本插件。
 
 ## 许可
 

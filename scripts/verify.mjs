@@ -118,7 +118,15 @@ async function gate3HostUnit() {
       tools: { register: (def) => { toolDefs.push(def); return () => {} } },
       effect: (fn) => fn(),
     }
-    const mod = await import(new URL('../lib/index.js', import.meta.url))
+    const previousGuardian = process.env.DSH_GUARDIAN
+    process.env.DSH_GUARDIAN = join(SMOKE_HOME, 'missing-guardian.mjs')
+    let mod
+    try {
+      mod = await import(new URL(`../lib/index.js?verify=${Date.now()}`, import.meta.url))
+    } finally {
+      if (previousGuardian === undefined) delete process.env.DSH_GUARDIAN
+      else process.env.DSH_GUARDIAN = previousGuardian
+    }
     mod.apply(ctx)
 
     // -- tools: all five present, schema shape sound
@@ -144,6 +152,10 @@ async function gate3HostUnit() {
     if (toolDefs.length === expected.length && names.every((n) => expected.includes(n))) {
       ok(`all ${expected.length} ops_* tools register with valid schemas`)
     }
+    const restartTool = toolDefs.find((d) => d.name === 'ops_restart')
+    const unavailable = await restartTool?.execute({})
+    if (unavailable?.ok === false && unavailable?.guardian === false) ok('ops_restart refuses unsafe fallback when guardian is missing')
+    else bad(`ops_restart must refuse without guardian: ${JSON.stringify(unavailable)}`)
 
     // -- routes: GET /dsh-ops/status answers 200 JSON
     const statusRoute = handlers.get('/dsh-ops/status')
@@ -161,6 +173,14 @@ async function gate3HostUnit() {
       else bad(`POST /dsh-ops/restart -> HTTP ${r.status} (expected 403 CSRF guard)`)
     } else {
       bad('POST /dsh-ops/restart route missing')
+    }
+    if (restartRoute) {
+      const r = await invoke(restartRoute, {
+        method: 'POST', url: '/dsh-ops/restart',
+        headers: { origin: 'http://localhost', host: 'localhost' },
+      })
+      if (r.status === 503 && JSON.parse(r.body).guardian === false) ok('POST /dsh-ops/restart -> 503 without guardian (no naked restart)')
+      else bad(`POST /dsh-ops/restart unsafe fallback: HTTP ${r.status} ${r.body.slice(0, 200)}`)
     }
   } catch (error) {
     bad(`host unit harness crashed: ${error?.stack ?? error}`)
