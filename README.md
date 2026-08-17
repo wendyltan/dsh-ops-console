@@ -9,13 +9,13 @@
 | Tab | 内容 |
 | --- | --- |
 | **概览** | DeepSeek 账户余额（赠金/充值/已用，**低于预警阈值时黄色徽章提示**，可按设置自动刷新）+ 官方充值/用量入口；Harness 引擎版本（**自动探测运行中的 dsh 包版本**）与 npm 最新版对比 |
-| **服务器** | 服务状态（地址 / PID / 运行时长 / 引擎版本）、一键重启、最近日志（条数可配置，**实时跟尾**开关，3 秒轮询） |
+| **服务器** | 服务状态、外部 guardian 防护状态、黄金快照/部署备份数量、完整预检、安全重启、黄金版本恢复、最近日志 |
 | **远程访问** | Tailscale `serve :3080` 开关、tailnet 域名与访问地址、**可信主机编辑**（`connection.trustedHosts` 增删 + 暴露面审计：当前 tailnet 域名是否在信任名单里、一键加入、保存后重启生效） |
 | **设置** | 余额自动刷新间隔（秒，0=关闭）、余额预警阈值（元）、日志条数，持久化到 profile 的 `.dsh-ops.json` |
 
 > 界面**中/英双语**（右上角切换，记住选择）。Agent 的模型 / 预设 / 权限等配置仍在 Harness 网页原生的「设置」里；本插件只管**运维面**。
 
-> 额外：注册了 **5 个 Agent 自运维工具**（`ops_status` / `ops_balance` / `ops_logs` / `ops_tailscale` / `ops_restart`），模型可以自己查状态、余额、日志，甚至自愈重启。
+> 额外：注册了 **6 个 Agent 自运维工具**（`ops_status` / `ops_balance` / `ops_logs` / `ops_tailscale` / `ops_preflight` / `ops_restart`）。重启由 DSH 进程之外的 guardian 执行，先隔离预检，失败时恢复黄金版本或进入安全模式。
 
 > Agent 的模型 / 预设 / 权限等配置仍在 Harness 网页原生的「设置」里；本插件只管**运维面**。
 
@@ -104,7 +104,7 @@ dsh plugin --profile web remove dsh-ops-console
 
 ## 架构
 
-- **Host**（`lib/index.js`）：在 `webServer` 服务上挂 `/dsh-ops/*` HTTP 路由，用 Node 内建 `fetch` / `fs` / `child_process` 完成余额、版本、日志、Tailscale、可信主机、设置持久化与自重启（重放原始 `dsh` 启动命令，不依赖任何桌面客户端）；可选注入 `credentials`（余额 Key 多来源）与 `tools`（注册 5 个 `ops_*` 自运维工具，注册失败不影响其余功能）。
+- **Host**（`lib/index.js`）：在 `webServer` 服务上挂 `/dsh-ops/*` HTTP 路由，除余额、版本、日志、Tailscale、可信主机与设置外，还代理外部 guardian 的状态、完整预检、安全重启和黄金版本恢复；可选注入 `credentials` 与 `tools`（注册 6 个 `ops_*` 工具）。guardian 缺失时查询会明确降级，插件本身仍可加载。
 - **Client**（`lib/client.js`）：注册 `settings.section` 设置页入口，四个 Tab（概览/服务器/远程访问/设置）通过 `fetch("/dsh-ops/…")` 调 Host；内置中英 i18n，host 消息通过 `msgKey`/`msgParams` 翻译（未知键回退原文）。
 
 **零运行时 npm 依赖**（只依赖 `webServer` 等 ctx 服务，不 import 任何 `@deepseek-ai/*` 包），`lib/` 下是纯 JS，无构建步骤，改完即生效。
@@ -122,8 +122,24 @@ dsh plugin --profile web remove dsh-ops-console
 git clone https://github.com/wendyltan/dsh-ops-console.git
 cd dsh-ops-console
 # 直接改 lib/index.js（Host）或 lib/client.js（Client），无需构建
-# 本地挂载验证：dsh plugin --profile web add "$PWD"
 ```
+
+### 安全开发流程（防止改崩线上服务）
+
+线上 profile 不再链接仓库或外接盘，而是链接内置盘 `~/.dsh/deployments/dsh-ops-console/current`。仓库修改、外接盘挂载时序和正式服务完全隔离：
+
+1. **改**：只改仓库里的 `lib/`。线上服务只读内置盘 `current/` 快照，改到一半或外接盘未挂载都不会影响线上。
+2. **验证**：`node scripts/verify.mjs` —— 四道关卡，前三道不碰任何 profile，第四道在仓库内 `.smoke-dsh/` 起一个临时 dsh web 端到端测 `/dsh-ops/*`：
+   - gate 1：`node --check` 两个 lib 文件（抓语法错误）
+   - gate 2：桩加载 `lib/client.js`（抓浏览器 bundle 格式的加载期崩溃）
+   - gate 3：mock ctx 调 `apply()`，断言 6 个 `ops_*` 工具注册 + schema 形状合法、`/dsh-ops/status` 正常、POST 无 Origin 被 403 拒绝
+   - gate 4：临时 dsh web 明确加载仓库候选源码（不是线上快照），逐条验证 ops/guardian 路由
+   - 任一失败 → 退出码非 0，禁止部署。
+3. **部署**：`node scripts/deploy.mjs`。候选通过后原子写入内置盘 `current/`，旧版移入 `backups/`（保留 8 份），再由 guardian 对完整 profile 做第二次隔离冒烟；失败自动撤销。
+4. **重启生效**：`node ~/.dsh/guardian/guardian.mjs restart --json`。正式进程只会在预检通过后停止。
+5. **回滚**：`node scripts/rollback.mjs` 恢复最新内部备份并再次预检；也可从控制台恢复 guardian 的 last-known-good 黄金快照。
+
+> guardian、watchdog 和安全模式运行在 DSH 进程之外。即使 profile 或插件导致 DSH 无法启动，外部恢复链仍然可用。
 
 ## 许可
 

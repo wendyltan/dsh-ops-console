@@ -42,6 +42,8 @@
   },
   "files": [
     "lib",
+    "guardian",
+    "scripts",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"

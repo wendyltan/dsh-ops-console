@@ -3,10 +3,17 @@ node_modules/
 lib/*.map
 *.tsbuildinfo
 
+# Legacy local deploy snapshots + smoke-test home. Production snapshots live
+# under ~/.dsh/deployments/dsh-ops-console/ and are never tied to this repo.
+.deploy
+.deploy.*
+.smoke-dsh/
+
 # macOS
 .DS_Store
 
 # Editor / local
 *.swp
+.dsh-*.bak
 .vscode/
 .idea/
