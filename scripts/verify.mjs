@@ -22,9 +22,9 @@
  * Exit code 0 = all gates green. Anything else aborts a deploy.
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -63,11 +63,65 @@ function resolveDshBin() {
 
 function gate1Syntax() {
   console.log('gate 1 — syntax (`node --check`)')
-  for (const file of ['lib/index.js', 'lib/client.js']) {
+  for (const file of ['lib/index.js', 'lib/client.js', 'scripts/deploy.mjs', 'scripts/rollback.mjs']) {
     const r = spawnSync(process.execPath, ['--check', join(ROOT, file)], { encoding: 'utf8' })
     if (r.status === 0) ok(`${file} parses`)
     else { bad(`${file} syntax error:\n${r.stderr}`); return }
   }
+  try {
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+    const guardian = pkg?.dsh?.guardian
+    if (guardian?.protocolVersion === 1 && guardian.healthPath === '/dsh-ops/status'
+        && guardian.snapshotLinkedBundle === true && guardian.profileFiles?.includes('.dsh-ops.json')) {
+      ok('package declares the generic Guardian integration contract')
+    } else bad('package dsh.guardian integration contract is missing or invalid')
+  } catch (error) {
+    bad(`package.json invalid: ${error?.message ?? error}`)
+  }
+}
+
+function gate3bRollbackSafety() {
+  console.log('gate 3b — rollback transaction safety')
+  const makeHome = (guardianOk) => {
+    const home = mkdtempSync(join(tmpdir(), 'dsh-ops-rollback-'))
+    const guardian = join(home, 'guardian', 'guardian.mjs')
+    mkdirSync(dirname(guardian), { recursive: true })
+    writeFileSync(guardian, `console.log(JSON.stringify({ok:${guardianOk}})); process.exit(${guardianOk ? 0 : 1})\n`)
+    return home
+  }
+
+  const failedHome = makeHome(false)
+  try {
+    const backups = join(failedHome, 'deployments', 'dsh-ops-console', 'backups')
+    const chosen = '2026-08-20T01-00-00'
+    mkdirSync(join(backups, chosen), { recursive: true })
+    writeFileSync(join(backups, chosen, 'marker'), 'candidate')
+    const r = spawnSync(process.execPath, [join(ROOT, 'scripts', 'rollback.mjs')], {
+      env: { ...process.env, DSH_HOME: failedHome }, encoding: 'utf8',
+    })
+    if (r.status !== 0 && existsSync(join(backups, chosen))
+        && !existsSync(join(failedHome, 'deployments', 'dsh-ops-console', 'current'))
+        && !r.stderr.includes('ENOENT')) ok('failed rollback restores a missing-current layout without a secondary crash')
+    else bad(`failed rollback transaction was not restored: ${r.stderr.slice(0, 300)}`)
+  } finally { rmSync(failedHome, { recursive: true, force: true }) }
+
+  const successHome = makeHome(true)
+  try {
+    const root = join(successHome, 'deployments', 'dsh-ops-console')
+    const backups = join(root, 'backups')
+    mkdirSync(join(root, 'current'), { recursive: true })
+    writeFileSync(join(root, 'current', 'marker'), 'current')
+    mkdirSync(join(backups, '2026-08-20T01-00-00'), { recursive: true })
+    writeFileSync(join(backups, '2026-08-20T01-00-00', 'marker'), 'versioned')
+    mkdirSync(join(backups, 'displaced-2099-01-01T00-00-00'), { recursive: true })
+    writeFileSync(join(backups, 'displaced-2099-01-01T00-00-00', 'marker'), 'displaced')
+    const r = spawnSync(process.execPath, [join(ROOT, 'scripts', 'rollback.mjs')], {
+      env: { ...process.env, DSH_HOME: successHome }, encoding: 'utf8',
+    })
+    const marker = readFileSync(join(root, 'current', 'marker'), 'utf8')
+    if (r.status === 0 && marker === 'versioned') ok('rollback ignores displaced entries and selects a versioned backup')
+    else bad(`rollback selected the wrong backup: status=${r.status}, marker=${marker}`)
+  } finally { rmSync(successHome, { recursive: true, force: true }) }
 }
 
 // ---------------------------------------------------------------- gate 2
@@ -181,6 +235,35 @@ async function gate3HostUnit() {
       })
       if (r.status === 503 && JSON.parse(r.body).guardian === false) ok('POST /dsh-ops/restart -> 503 without guardian (no naked restart)')
       else bad(`POST /dsh-ops/restart unsafe fallback: HTTP ${r.status} ${r.body.slice(0, 200)}`)
+    }
+
+    // -- protocol negotiation: an unknown Guardian protocol must not receive mutations
+    const fakeGuardian = join(SMOKE_HOME, 'incompatible-guardian.mjs')
+    mkdirSync(dirname(fakeGuardian), { recursive: true })
+    writeFileSync(fakeGuardian, "console.log(JSON.stringify({ok:true,guardianVersion:'future',protocolVersion:99,capabilities:['restart']}))\n")
+    const oldGuardian = process.env.DSH_GUARDIAN
+    process.env.DSH_GUARDIAN = fakeGuardian
+    try {
+      const incompatibleHandlers = new Map()
+      const incompatibleCtx = {
+        credentials: undefined,
+        webServer: { register: (route) => { incompatibleHandlers.set(route.path, route); return () => {} } },
+        tools: undefined,
+        effect: (fn) => fn(),
+      }
+      const incompatibleMod = await import(new URL(`../lib/index.js?incompatible=${Date.now()}`, import.meta.url))
+      incompatibleMod.apply(incompatibleCtx)
+      const route = incompatibleHandlers.get('/dsh-ops/restart')
+      const r = await invoke(route, {
+        method: 'POST', url: '/dsh-ops/restart',
+        headers: { origin: 'http://localhost', host: 'localhost' },
+      })
+      if (r.status === 503 && JSON.parse(r.body).error?.includes('unsupported guardian protocol')) {
+        ok('restart refuses an unsupported Guardian protocol')
+      } else bad(`restart accepted incompatible Guardian: HTTP ${r.status} ${r.body.slice(0, 200)}`)
+    } finally {
+      if (oldGuardian === undefined) delete process.env.DSH_GUARDIAN
+      else process.env.DSH_GUARDIAN = oldGuardian
     }
   } catch (error) {
     bad(`host unit harness crashed: ${error?.stack ?? error}`)
@@ -318,6 +401,7 @@ console.log(`dsh-ops-console verify — ${new Date().toISOString()}`)
 gate1Syntax()
 gate2ClientStubLoad()
 await gate3HostUnit()
+gate3bRollbackSafety()
 await gate4SmokeBoot()
 
 console.log(failures === 0

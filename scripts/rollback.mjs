@@ -13,7 +13,12 @@ const HISTORY = join(ROOT, 'history.json')
 const GUARDIAN = join(DSH_HOME, 'guardian', 'guardian.mjs')
 mkdirSync(BACKUPS, { recursive: true })
 
-const names = readdirSync(BACKUPS).sort()
+if (!existsSync(GUARDIAN)) {
+  console.error(`guardian missing: ${GUARDIAN}`)
+  process.exit(1)
+}
+
+const names = readdirSync(BACKUPS).filter((name) => /^\d{4}-\d{2}-\d{2}T/.test(name)).sort()
 if (names.length === 0) {
   console.error('no internal deployment backup exists; rollback aborted.')
   process.exit(1)
@@ -21,7 +26,8 @@ if (names.length === 0) {
 const chosen = names[names.length - 1]
 const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
 const displaced = join(BACKUPS, `displaced-${stamp}`)
-if (existsSync(CURRENT)) renameSync(CURRENT, displaced)
+const hadCurrent = existsSync(CURRENT)
+if (hadCurrent) renameSync(CURRENT, displaced)
 renameSync(join(BACKUPS, chosen), CURRENT)
 
 const checked = spawnSync(process.execPath, [GUARDIAN, 'preflight', '--json'], { encoding: 'utf8', timeout: 120_000 })
@@ -30,13 +36,13 @@ let ok = checked.status === 0
 try { ok &&= JSON.parse(checked.stdout).ok === true } catch { ok = false }
 if (!ok) {
   renameSync(CURRENT, join(BACKUPS, chosen))
-  renameSync(displaced, CURRENT)
+  if (hadCurrent) renameSync(displaced, CURRENT)
   console.error('rollback candidate failed guardian preflight; original deployment restored.')
   process.exit(1)
 }
 
 const history = existsSync(HISTORY) ? JSON.parse(readFileSync(HISTORY, 'utf8')) : []
-history.push({ at: new Date().toISOString(), action: 'rollback', restored: chosen, displaced })
+history.push({ at: new Date().toISOString(), action: 'rollback', restored: chosen, displaced: hadCurrent ? displaced : null })
 writeFileSync(HISTORY, JSON.stringify(history.slice(-100), null, 2) + '\n')
 spawnSync(process.execPath, [GUARDIAN, 'snapshot', '--json'], { stdio: 'inherit' })
 console.log(`restored ${chosen}; activate with guardian restart.`)

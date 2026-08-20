@@ -126,6 +126,7 @@ dsh plugin --profile web remove dsh-ops-console
 
 - **Host**（`lib/index.js`）：在 `webServer` 服务上挂 `/dsh-ops/*` HTTP 路由，除余额、版本、日志、Tailscale、可信主机与设置外，还代理外部 Guardian 的状态、完整预检、安全重启和黄金版本恢复；可选注入 `credentials` 与 `tools`（注册 6 个 `ops_*` 工具）。Guardian 缺失时查询会明确降级，插件本身仍可加载，保护类写操作返回 503。
 - **Client**（`lib/client.js`）：注册 `settings.section` 设置页入口，四个 Tab（概览/服务器/远程访问/设置）通过 `fetch("/dsh-ops/…")` 调 Host；内置中英 i18n，host 消息通过 `msgKey`/`msgParams` 翻译（未知键回退原文）。
+- **Guardian 边界**：插件通过 `package.json` 的 `dsh.guardian` 元数据声明健康端点和快照需求；desktop Guardian 不保存插件名、仓库路径或 `/dsh-ops/*` 常量。运行时仅接受已声明能力且协议版本兼容的 Guardian。
 
 **零运行时 npm 依赖**（只依赖 `webServer` 等 ctx 服务，不 import 任何 `@deepseek-ai/*` 包），`lib/` 下是纯 JS，无构建步骤，改完即生效。
 

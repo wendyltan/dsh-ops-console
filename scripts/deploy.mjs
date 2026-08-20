@@ -27,7 +27,14 @@ const liveLink = join(PROFILE, 'node_modules', 'dsh-ops-console')
 const originalProfilePackage = readFileSync(profilePackageFile, 'utf8')
 const originalProfileLock = existsSync(profileLockFile) ? readFileSync(profileLockFile, 'utf8') : null
 let originalLiveLink = null
-try { originalLiveLink = readlinkSync(liveLink) } catch {}
+try {
+  if (!lstatSync(liveLink).isSymbolicLink()) {
+    throw new Error(`internal deployment refuses to replace a non-symlink package: ${liveLink}`)
+  }
+  originalLiveLink = readlinkSync(liveLink)
+} catch (error) {
+  if (existsSync(liveLink)) throw error
+}
 
 mkdirSync(BACKUPS, { recursive: true })
 
@@ -77,7 +84,11 @@ function updateProfileLink() {
   const lockFile = profileLockFile
   if (existsSync(lockFile)) {
     let lock = readFileSync(lockFile, 'utf8')
-    lock = lock.replace(/(dsh-ops-console:\n\s+specifier:)\s*[^\n]+\n\s+version:\s*[^\n]+/, `$1 ${specifier}\n        version: ${specifier}`)
+    const updated = lock.replace(/(dsh-ops-console:\n\s+specifier:)\s*[^\n]+\n\s+version:\s*[^\n]+/, `$1 ${specifier}\n        version: ${specifier}`)
+    if (lock.includes('dsh-ops-console:') && !updated.includes(`specifier: ${specifier}`)) {
+      throw new Error('pnpm lockfile contains dsh-ops-console but its importer format was not recognized')
+    }
+    lock = updated
     writeFileSync(`${lockFile}.new`, lock)
     renameSync(`${lockFile}.new`, lockFile)
   }
@@ -89,22 +100,28 @@ function updateProfileLink() {
   renameSync(tempLink, liveLink)
 }
 
-updateProfileLink()
-
-console.log('\n== full-profile guardian preflight ==')
-const preflight = spawnSync(process.execPath, [GUARDIAN, 'preflight', '--json'], { encoding: 'utf8', timeout: 120_000 })
-process.stdout.write(preflight.stdout || '')
-let preflightOk = preflight.status === 0
-try { preflightOk &&= JSON.parse(preflight.stdout).ok === true } catch { preflightOk = false }
-if (!preflightOk) {
+function restoreOriginalDeployment(reason) {
   const failed = join(DEPLOY_ROOT, `failed-${stamp}`)
-  renameSync(CURRENT, failed)
+  if (existsSync(CURRENT)) renameSync(CURRENT, failed)
   if (backup !== null) renameSync(backup, CURRENT)
   writeFileSync(profilePackageFile, originalProfilePackage)
   if (originalProfileLock !== null) writeFileSync(profileLockFile, originalProfileLock)
   rmSync(liveLink, { recursive: true, force: true })
   if (originalLiveLink !== null) symlinkSync(originalLiveLink, liveLink, 'dir')
-  console.error('full-profile preflight failed; deployment was rolled back automatically.')
+  console.error(`${reason}; deployment was rolled back automatically.`)
+}
+
+try {
+  updateProfileLink()
+
+  console.log('\n== full-profile guardian preflight ==')
+  const preflight = spawnSync(process.execPath, [GUARDIAN, 'preflight', '--json'], { encoding: 'utf8', timeout: 120_000 })
+  process.stdout.write(preflight.stdout || '')
+  let preflightOk = preflight.status === 0
+  try { preflightOk &&= JSON.parse(preflight.stdout).ok === true } catch { preflightOk = false }
+  if (!preflightOk) throw new Error('full-profile preflight failed')
+} catch (error) {
+  restoreOriginalDeployment(String(error?.message ?? error))
   process.exit(1)
 }
 
@@ -120,7 +137,7 @@ const history = existsSync(HISTORY) ? JSON.parse(readFileSync(HISTORY, 'utf8')) 
 history.push({ at: new Date().toISOString(), action: 'deploy', source: ROOT, current: CURRENT, backup })
 writeFileSync(HISTORY, JSON.stringify(history.slice(-100), null, 2) + '\n')
 
-const names = readdirSync(BACKUPS).sort()
+const names = readdirSync(BACKUPS).filter((name) => /^\d{4}-\d{2}-\d{2}T/.test(name)).sort()
 while (names.length > KEEP_BACKUPS) rmSync(join(BACKUPS, names.shift()), { recursive: true, force: true })
 
 spawnSync(process.execPath, [GUARDIAN, 'snapshot', '--json'], { stdio: 'inherit' })
