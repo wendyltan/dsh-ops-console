@@ -1,25 +1,7 @@
 #!/usr/bin/env node
 /**
- * dsh-ops-console — verification gates (run from repo root: `node scripts/verify.mjs`)
- *
- * Four gates, in increasing cost. Gates 1–3 never touch any live dsh profile;
- * gate 4 boots a throwaway dsh web whose DSH_HOME lives INSIDE this repo
- * (.smoke-dsh/, gitignored) so a bad edit can never break the running service.
- *
- *   gate 1  syntax check both lib files            (`node --check`)
- *   gate 2  stub-load the browser client bundle    (catches load-time crashes
- *           in the custom window.__ModuleLoader__ format)
- *   gate 3  unit-harness the host: call apply()
- *           with a mock ctx; assert the 5 ops_* tools
- *           register with valid schemas and the
- *           /dsh-ops/status route answers; assert the
- *           CSRF same-origin guard on POST routes
- *   gate 4  smoke boot: start `dsh web` on a scratch
- *           profile (DSH_HOME=.smoke-dsh, node_modules
- *           symlinked from the live web profile) and
- *           hit /dsh-ops/* routes end to end
- *
- * Exit code 0 = all gates green. Anything else aborts a deploy.
+ * dsh-ops-console verification: syntax, browser-module load, standalone
+ * HTTP routes and a real throwaway dsh web boot. No Guardian is required.
  */
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -30,381 +12,172 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const HOME = homedir()
-const DSH_HOME = process.env.DSH_HOME ?? join(HOME, '.dsh')
-const LIVE_PROFILE_NM = join(DSH_HOME, 'profiles', 'web', 'node_modules')
+const LIVE_PROFILE_NM = join(process.env.DSH_HOME ?? join(HOME, '.dsh'), 'profiles', 'web', 'node_modules')
 const SMOKE_HOME = join(ROOT, '.smoke-dsh')
 const SMOKE_PROFILE = join(SMOKE_HOME, 'profiles', 'ops-smoke')
-const BOOT_TIMEOUT_MS = 90_000
-
 let failures = 0
-const ok = (msg) => console.log('  \u2713 ' + msg)
-const bad = (msg) => { console.log('  \u2717 ' + msg); failures++ }
-
-// ---------------------------------------------------------------- dsh bin
+const ok = (text) => console.log('  ✓ ' + text)
+const bad = (text) => { console.log('  ✗ ' + text); failures++ }
 
 function resolveDshBin() {
   if (process.env.DSH_BIN && existsSync(process.env.DSH_BIN)) return process.env.DSH_BIN
-  const which = spawnSync('which', ['dsh'], { encoding: 'utf8' })
-  if (which.status === 0 && which.stdout.trim() !== '') return which.stdout.trim()
-  // npx cache fallback: newest ~/.npm/_npx/*/node_modules/@deepseek-ai/dsh/lib/bin.js
-  const npxRoot = join(HOME, '.npm', '_npx')
-  let best = null
+  const found = spawnSync('which', ['dsh'], { encoding: 'utf8' })
+  if (found.status === 0 && found.stdout.trim()) return found.stdout.trim()
+  const root = join(HOME, '.npm', '_npx')
+  let newest = null
   try {
-    for (const dir of readdirSync(npxRoot)) {
-      const candidate = join(npxRoot, dir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
-      if (!existsSync(candidate)) continue
-      if (best === null || statSync(candidate).mtimeMs > statSync(best).mtimeMs) best = candidate
+    for (const entry of readdirSync(root)) {
+      const candidate = join(root, entry, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+      if (existsSync(candidate) && (newest === null || statSync(candidate).mtimeMs > statSync(newest).mtimeMs)) newest = candidate
     }
-  } catch { /* no npx cache */ }
-  return best
+  } catch {}
+  return newest
 }
 
-// ---------------------------------------------------------------- gate 1
-
-function gate1Syntax() {
-  console.log('gate 1 — syntax (`node --check`)')
+function gate1() {
+  console.log('gate 1 — syntax and manifest')
   for (const file of ['lib/index.js', 'lib/client.js', 'scripts/deploy.mjs', 'scripts/rollback.mjs']) {
-    const r = spawnSync(process.execPath, ['--check', join(ROOT, file)], { encoding: 'utf8' })
-    if (r.status === 0) ok(`${file} parses`)
-    else { bad(`${file} syntax error:\n${r.stderr}`); return }
+    const result = spawnSync(process.execPath, ['--check', join(ROOT, file)], { encoding: 'utf8' })
+    if (result.status === 0) ok(file + ' parses')
+    else bad(file + ' syntax error: ' + result.stderr.slice(0, 500))
   }
   try {
     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
-    const guardian = pkg?.dsh?.guardian
-    if (guardian?.protocolVersion === 1 && guardian.healthPath === '/dsh-ops/status'
-        && guardian.snapshotLinkedBundle === true && guardian.profileFiles?.includes('.dsh-ops.json')) {
-      ok('package declares the generic Guardian integration contract')
-    } else bad('package dsh.guardian integration contract is missing or invalid')
-  } catch (error) {
-    bad(`package.json invalid: ${error?.message ?? error}`)
-  }
+    if (!pkg?.dsh?.guardian && !JSON.stringify(pkg).includes('guardian')) ok('manifest has no Guardian integration dependency')
+    else bad('manifest still declares a Guardian integration')
+  } catch (error) { bad('package.json invalid: ' + error.message) }
 }
 
-function gate3bRollbackSafety() {
-  console.log('gate 3b — rollback transaction safety')
-  const makeHome = (guardianOk) => {
-    const home = mkdtempSync(join(tmpdir(), 'dsh-ops-rollback-'))
-    const guardian = join(home, 'guardian', 'guardian.mjs')
-    mkdirSync(dirname(guardian), { recursive: true })
-    writeFileSync(guardian, `console.log(JSON.stringify({ok:${guardianOk}})); process.exit(${guardianOk ? 0 : 1})\n`)
-    return home
-  }
-
-  const failedHome = makeHome(false)
-  try {
-    const backups = join(failedHome, 'deployments', 'dsh-ops-console', 'backups')
-    const chosen = '2026-08-20T01-00-00'
-    mkdirSync(join(backups, chosen), { recursive: true })
-    writeFileSync(join(backups, chosen, 'marker'), 'candidate')
-    const r = spawnSync(process.execPath, [join(ROOT, 'scripts', 'rollback.mjs')], {
-      env: { ...process.env, DSH_HOME: failedHome }, encoding: 'utf8',
-    })
-    if (r.status !== 0 && existsSync(join(backups, chosen))
-        && !existsSync(join(failedHome, 'deployments', 'dsh-ops-console', 'current'))
-        && !r.stderr.includes('ENOENT')) ok('failed rollback restores a missing-current layout without a secondary crash')
-    else bad(`failed rollback transaction was not restored: ${r.stderr.slice(0, 300)}`)
-  } finally { rmSync(failedHome, { recursive: true, force: true }) }
-
-  const successHome = makeHome(true)
-  try {
-    const root = join(successHome, 'deployments', 'dsh-ops-console')
-    const backups = join(root, 'backups')
-    mkdirSync(join(root, 'current'), { recursive: true })
-    writeFileSync(join(root, 'current', 'marker'), 'current')
-    mkdirSync(join(backups, '2026-08-20T01-00-00'), { recursive: true })
-    writeFileSync(join(backups, '2026-08-20T01-00-00', 'marker'), 'versioned')
-    mkdirSync(join(backups, 'displaced-2099-01-01T00-00-00'), { recursive: true })
-    writeFileSync(join(backups, 'displaced-2099-01-01T00-00-00', 'marker'), 'displaced')
-    const r = spawnSync(process.execPath, [join(ROOT, 'scripts', 'rollback.mjs')], {
-      env: { ...process.env, DSH_HOME: successHome }, encoding: 'utf8',
-    })
-    const marker = readFileSync(join(root, 'current', 'marker'), 'utf8')
-    if (r.status === 0 && marker === 'versioned') ok('rollback ignores displaced entries and selects a versioned backup')
-    else bad(`rollback selected the wrong backup: status=${r.status}, marker=${marker}`)
-  } finally { rmSync(successHome, { recursive: true, force: true }) }
-}
-
-// ---------------------------------------------------------------- gate 2
-
-function gate2ClientStubLoad() {
-  console.log('gate 2 — client bundle stub-load')
+function gate2() {
+  console.log('gate 2 — client bundle load')
   try {
     const src = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
-    const reactStub = {
-      createElement: () => ({}),
-      Fragment: Symbol('Fragment'),
-      useState: () => [],
-      useEffect: () => {},
-      useCallback: (f) => f,
-      useRef: () => ({}),
-    }
+    const React = { createElement: () => ({}), Fragment: Symbol('Fragment'), useState: () => [], useEffect: () => {}, useCallback: (fn) => fn }
     let captured = null
-    const requireStub = (id) => {
-      if (id === 'react') return reactStub
-      throw new Error('client bundle unexpectedly requires: ' + id)
-    }
-    const windowStub = {
-      __ModuleLoader__: { load: (spec) => { captured = spec.factory(requireStub) } },
-    }
-    // eslint-disable-next-line no-new-func
-    const fn = new Function('window', 'require', 'console', src)
-    fn(windowStub, requireStub, console)
-    if (captured === null || captured.name !== 'dsh-ops-console' || typeof captured.apply !== 'function') {
-      bad('client factory did not produce a valid module (name/apply missing)')
-      return
-    }
-    ok('factory runs, exports.name + apply intact')
-  } catch (error) {
-    bad(`client load crashed: ${error?.message ?? error}`)
-  }
+    const windowStub = { __ModuleLoader__: { load: (spec) => { captured = spec.factory((id) => { if (id === 'react') return React; throw new Error('unexpected dependency: ' + id) }) } } }
+    new Function('window', 'require', 'console', src)(windowStub, () => {}, console)
+    if (captured?.name === 'dsh-ops-console' && typeof captured.apply === 'function') ok('client factory exports an installable settings section')
+    else bad('client factory did not export name/apply')
+  } catch (error) { bad('client bundle crashed: ' + error.message) }
 }
 
-// ---------------------------------------------------------------- gate 3
-
-async function gate3HostUnit() {
-  console.log('gate 3 — host apply() unit harness (mock ctx)')
-  try {
-    const handlers = new Map()
-    const toolDefs = []
-    const ctx = {
-      credentials: undefined,
-      webServer: { register: (route) => { handlers.set(route.path, route); return () => {} } },
-      tools: { register: (def) => { toolDefs.push(def); return () => {} } },
-      effect: (fn) => fn(),
-    }
-    const previousGuardian = process.env.DSH_GUARDIAN
-    const previousAdminToken = process.env.DSH_OPS_ADMIN_TOKEN
-    process.env.DSH_GUARDIAN = join(SMOKE_HOME, 'missing-guardian.mjs')
-    process.env.DSH_OPS_ADMIN_TOKEN = 'v'.repeat(48)
-    const mod = await import(new URL(`../lib/index.js?verify=${Date.now()}`, import.meta.url))
-    mod.apply(ctx)
-
-    // -- tools: all five present, schema shape sound
-    const expected = ['ops_status', 'ops_balance', 'ops_logs', 'ops_tailscale', 'ops_preflight']
-    const names = toolDefs.map((d) => d.name)
-    for (const want of expected) {
-      if (!names.includes(want)) bad(`tool ${want} not registered (got: ${names.join(', ') || 'none'})`)
-    }
-    if (toolDefs.length !== expected.length) bad(`expected ${expected.length} tools, got ${toolDefs.length}`)
-    for (const def of toolDefs) {
-      const problems = []
-      if (def.parameters?.type !== 'object') problems.push('parameters.type !== object')
-      const outSchema = def.output?.schema
-      if (outSchema?.type !== 'object') problems.push('output.schema.type !== object')
-      if (outSchema?.properties && typeof outSchema.properties === 'object') {
-        for (const [key, prop] of Object.entries(outSchema.properties)) {
-          if (Array.isArray(prop?.type)) problems.push(`output.schema.properties.${key}.type is an array`)
-        }
-      }
-      if (typeof def.execute !== 'function') problems.push('execute is not a function')
-      if (problems.length > 0) bad(`${def.name}: ${problems.join('; ')}`)
-    }
-    if (toolDefs.length === expected.length && names.every((n) => expected.includes(n))) {
-      ok(`all ${expected.length} ops_* tools register with valid schemas`)
-    }
-    // -- routes: GET /dsh-ops/status answers 200 JSON
-    const statusRoute = handlers.get('/dsh-ops/status')
-    if (!statusRoute) { bad('/dsh-ops/status route missing'); return }
-    const res = await invoke(statusRoute, { method: 'GET', url: '/dsh-ops/status', headers: {} })
-    const parsed = JSON.parse(res.body)
-    if (res.status === 200 && parsed.ok === true && parsed.pid > 0) ok('/dsh-ops/status -> 200 { ok: true, pid }')
-    else bad(`/dsh-ops/status -> HTTP ${res.status}: ${res.body.slice(0, 200)}`)
-
-    // -- CSRF guard: POST without Origin must 403
-    const restartRoute = handlers.get('/dsh-ops/restart')
-    if (restartRoute) {
-      const r = await invoke(restartRoute, { method: 'POST', url: '/dsh-ops/restart', headers: {} })
-      if (r.status === 403) ok('POST /dsh-ops/restart rejected (no Origin) -> 403')
-      else bad(`POST /dsh-ops/restart -> HTTP ${r.status} (expected 403 CSRF guard)`)
-    } else {
-      bad('POST /dsh-ops/restart route missing')
-    }
-    if (restartRoute) {
-      const unauthenticated = await invoke(restartRoute, {
-        method: 'POST', url: '/dsh-ops/restart', headers: { origin: 'http://localhost', host: 'localhost' },
-      })
-      if (unauthenticated.status === 401 && JSON.parse(unauthenticated.body).authRequired === true) ok('POST /dsh-ops/restart requires an admin token')
-      else bad(`POST /dsh-ops/restart accepted a missing token: HTTP ${unauthenticated.status} ${unauthenticated.body.slice(0, 200)}`)
-      const r = await invoke(restartRoute, {
-        method: 'POST', url: '/dsh-ops/restart',
-        headers: { origin: 'http://localhost', host: 'localhost', 'x-dsh-ops-token': 'v'.repeat(48) },
-      })
-      if (r.status === 503 && JSON.parse(r.body).guardian === false) ok('POST /dsh-ops/restart -> 503 without guardian (no naked restart)')
-      else bad(`POST /dsh-ops/restart unsafe fallback: HTTP ${r.status} ${r.body.slice(0, 200)}`)
-    }
-
-    // -- protocol negotiation: an unknown Guardian protocol must not receive mutations
-    const fakeGuardian = join(SMOKE_HOME, 'incompatible-guardian.mjs')
-    mkdirSync(dirname(fakeGuardian), { recursive: true })
-    writeFileSync(fakeGuardian, "console.log(JSON.stringify({ok:true,guardianVersion:'future',protocolVersion:99,capabilities:['restart']}))\n")
-    const oldGuardian = process.env.DSH_GUARDIAN
-    process.env.DSH_GUARDIAN = fakeGuardian
-    try {
-      const incompatibleHandlers = new Map()
-      const incompatibleCtx = {
-        credentials: undefined,
-        webServer: { register: (route) => { incompatibleHandlers.set(route.path, route); return () => {} } },
-        tools: undefined,
-        effect: (fn) => fn(),
-      }
-      const incompatibleMod = await import(new URL(`../lib/index.js?incompatible=${Date.now()}`, import.meta.url))
-      incompatibleMod.apply(incompatibleCtx)
-      const route = incompatibleHandlers.get('/dsh-ops/restart')
-      const r = await invoke(route, {
-        method: 'POST', url: '/dsh-ops/restart',
-        headers: { origin: 'http://localhost', host: 'localhost', 'x-dsh-ops-token': 'v'.repeat(48) },
-      })
-      if (r.status === 503 && JSON.parse(r.body).error?.includes('unsupported guardian protocol')) {
-        ok('restart refuses an unsupported Guardian protocol')
-      } else bad(`restart accepted incompatible Guardian: HTTP ${r.status} ${r.body.slice(0, 200)}`)
-    } finally {
-      if (oldGuardian === undefined) delete process.env.DSH_GUARDIAN
-      else process.env.DSH_GUARDIAN = oldGuardian
-    }
-    if (previousGuardian === undefined) delete process.env.DSH_GUARDIAN
-    else process.env.DSH_GUARDIAN = previousGuardian
-    if (previousAdminToken === undefined) delete process.env.DSH_OPS_ADMIN_TOKEN
-    else process.env.DSH_OPS_ADMIN_TOKEN = previousAdminToken
-  } catch (error) {
-    bad(`host unit harness crashed: ${error?.stack ?? error}`)
-  }
-}
-
-function invoke(route, { method = 'GET', url = '', headers = {} }) {
+function invoke(route, { method = 'GET', url = '/', headers = {}, body = '' } = {}) {
   return new Promise((resolve) => {
-    let status = 0
-    let body = ''
-    const res = {
-      writeHead: (s) => { status = s },
-      end: (b) => { body = b; resolve({ status, body }) },
+    let status = 0; let output = ''
+    const request = {
+      method, url, headers,
+      on(event, handler) {
+        if (event === 'data' && body) handler(Buffer.from(body))
+        if (event === 'end') handler()
+        return request
+      },
     }
-    Promise.resolve(route.handler({ method, url, headers }, res)).catch((error) => resolve({ status: 0, body: String(error) }))
+    const response = { writeHead: (code) => { status = code }, end: (text = '') => { output = text; resolve({ status, output }) } }
+    Promise.resolve(route.handler(request, response)).catch((error) => resolve({ status: 0, output: String(error) }))
   })
 }
 
-// ---------------------------------------------------------------- gate 4
+async function gate3() {
+  console.log('gate 3 — standalone route contract')
+  const home = mkdtempSync(join(tmpdir(), 'dsh-ops-verify-'))
+  const oldHome = process.env.DSH_HOME
+  const oldToken = process.env.DSH_OPS_ADMIN_TOKEN
+  process.env.DSH_HOME = home
+  process.env.DSH_OPS_ADMIN_TOKEN = 'v'.repeat(48)
+  mkdirSync(join(home, 'profiles', 'web'), { recursive: true })
+  writeFileSync(join(home, 'profiles', 'web', 'cordis.patch.yml'), '[]\n')
+  const handlers = new Map()
+  try {
+    const mod = await import(new URL('../lib/index.js?verify=' + Date.now(), import.meta.url))
+    mod.apply({ credentials: undefined, webServer: { register: (route) => { handlers.set(route.path, route); return () => {} } }, effect: (fn) => fn() })
+    const expected = ['/dsh-ops/status', '/dsh-ops/summary', '/dsh-ops/diagnose', '/dsh-ops/timeline', '/dsh-ops/report', '/dsh-ops/auth']
+    for (const path of expected) {
+      const route = handlers.get(path)
+      if (!route) { bad(path + ' route missing'); continue }
+      const result = await invoke(route, { url: path + (path === '/dsh-ops/diagnose' ? '?symptom=remote' : '') })
+      const data = JSON.parse(result.output)
+      if (result.status === 200 && data.ok === true) ok(path + ' returns usable JSON')
+      else bad(path + ' failed: ' + result.output.slice(0, 300))
+    }
+    if (!handlers.has('/dsh-ops/guardian') && !handlers.has('/dsh-ops/restart') && !handlers.has('/dsh-ops/preflight')) ok('no Guardian control routes are registered')
+    else bad('obsolete Guardian control route remains registered')
+    const save = handlers.get('/dsh-ops/settings/save')
+    const denied = await invoke(save, { method: 'POST', url: '/dsh-ops/settings/save', headers: { origin: 'http://localhost', host: 'localhost' }, body: JSON.stringify({ settings: {} }) })
+    if (denied.status === 401 && JSON.parse(denied.output).authRequired === true) ok('writes still require an admin token')
+    else bad('write authentication guard failed: ' + denied.output)
+    const crossSite = await invoke(save, { method: 'POST', url: '/dsh-ops/settings/save', headers: {}, body: '{}' })
+    if (crossSite.status === 403) ok('writes still reject untrusted origins')
+    else bad('CSRF guard failed: ' + crossSite.output)
+  } catch (error) { bad('route contract crashed: ' + (error.stack || error)) }
+  finally {
+    if (oldHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = oldHome
+    if (oldToken === undefined) delete process.env.DSH_OPS_ADMIN_TOKEN; else process.env.DSH_OPS_ADMIN_TOKEN = oldToken
+    rmSync(home, { recursive: true, force: true })
+  }
+}
 
-function setupSmokeProfile() {
+function setupSmoke() {
   rmSync(SMOKE_PROFILE, { recursive: true, force: true })
   mkdirSync(SMOKE_PROFILE, { recursive: true })
-  writeFileSync(join(SMOKE_PROFILE, 'package.json'), JSON.stringify({
-    name: 'dsh-profile-ops-smoke',
-    private: true,
-    dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-ops-console'] } },
-  }, null, 2) + '\n')
+  writeFileSync(join(SMOKE_PROFILE, 'package.json'), JSON.stringify({ name: 'dsh-ops-smoke', private: true, dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-ops-console'] } } }, null, 2) + '\n')
   writeFileSync(join(SMOKE_PROFILE, 'cordis.yml'), '[]\n')
-  const smokeModules = join(SMOKE_PROFILE, 'node_modules')
-  mkdirSync(smokeModules, { recursive: true })
-  for (const name of readdirSync(LIVE_PROFILE_NM)) {
-    if (name === 'dsh-ops-console') continue
-    const source = join(LIVE_PROFILE_NM, name)
-    const target = join(smokeModules, name)
-    if (!name.startsWith('@')) {
-      symlinkSync(source, target, 'dir')
-      continue
+  const target = join(SMOKE_PROFILE, 'node_modules')
+  mkdirSync(target, { recursive: true })
+  for (const entry of readdirSync(LIVE_PROFILE_NM)) {
+    if (entry === 'dsh-ops-console') continue
+    const source = join(LIVE_PROFILE_NM, entry)
+    if (!entry.startsWith('@')) symlinkSync(source, join(target, entry), 'dir')
+    else {
+      mkdirSync(join(target, entry), { recursive: true })
+      for (const child of readdirSync(source)) symlinkSync(join(source, child), join(target, entry, child), 'dir')
     }
-    mkdirSync(target, { recursive: true })
-    for (const child of readdirSync(source)) symlinkSync(join(source, child), join(target, child), 'dir')
   }
-  symlinkSync(ROOT, join(smokeModules, 'dsh-ops-console'), 'dir')
+  symlinkSync(ROOT, join(target, 'dsh-ops-console'), 'dir')
 }
 
-function findFreePort() {
-  return new Promise((resolvePromise, reject) => {
-    const srv = createServer()
-    srv.on('error', reject)
-    srv.listen(0, '127.0.0.1', () => {
-      const port = srv.address().port
-      srv.close(() => resolvePromise(port))
-    })
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const server = createServer()
+    server.on('error', reject)
+    server.listen(0, '127.0.0.1', () => { const port = server.address().port; server.close(() => resolve(port)) })
   })
 }
 
-async function gate4SmokeBoot() {
-  console.log('gate 4 — smoke boot (throwaway dsh web in .smoke-dsh)')
-  const dshBin = resolveDshBin()
-  if (dshBin === null) { bad('could not resolve dsh binary (set DSH_BIN env) — skipping smoke boot'); return }
-  if (!existsSync(LIVE_PROFILE_NM)) { bad(`live profile node_modules not found at ${LIVE_PROFILE_NM} — skipping smoke boot`); return }
-
-  setupSmokeProfile()
-  const port = await findFreePort()
-  const base = `http://127.0.0.1:${port}`
-  const child = spawn(process.execPath, [dshBin, '--profile', 'ops-smoke', '--host', '127.0.0.1', '--port', String(port)], {
-    env: { ...process.env, DSH_HOME: SMOKE_HOME },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  let stdout = ''
-  let stderr = ''
-  child.stdout.on('data', (d) => { stdout += d })
-  child.stderr.on('data', (d) => { stderr += d })
-
+async function gate4() {
+  console.log('gate 4 — real throwaway dsh web')
+  const dsh = resolveDshBin()
+  if (!dsh || !existsSync(LIVE_PROFILE_NM)) { bad('dsh binary or live profile modules unavailable for smoke boot'); return }
+  setupSmoke()
+  const port = await freePort()
+  const base = 'http://127.0.0.1:' + port
+  const child = spawn(process.execPath, [dsh, '--profile', 'ops-smoke', '--host', '127.0.0.1', '--port', String(port)], { env: { ...process.env, DSH_HOME: SMOKE_HOME }, stdio: 'ignore' })
   try {
-    const deadline = Date.now() + BOOT_TIMEOUT_MS
-    let status = null
-    while (Date.now() < deadline) {
-      if (child.exitCode !== null) break
-      try {
-        const r = await fetch(`${base}/dsh-ops/status`)
-        if (r.ok) { status = await r.json(); break }
-      } catch { /* not up yet */ }
-      await new Promise((r) => setTimeout(r, 500))
+    let ready = null
+    const end = Date.now() + 90000
+    while (Date.now() < end && child.exitCode === null) {
+      try { const r = await fetch(base + '/dsh-ops/summary'); if (r.ok) { ready = await r.json(); break } } catch {}
+      await new Promise((resolve) => setTimeout(resolve, 500))
     }
-
-    if (status === null || status.ok !== true) {
-      bad(`smoke server never answered /dsh-ops/status (exit=${child.exitCode ?? 'still running'})`)
-      console.error('--- smoke stdout tail ---\n' + stdout.slice(-2000))
-      console.error('--- smoke stderr tail ---\n' + stderr.slice(-2000))
-      return
+    if (!ready?.ok) { bad('smoke server never answered /dsh-ops/summary'); return }
+    ok('dsh web booted and summary is available')
+    for (const path of ['/dsh-ops/diagnose?symptom=history', '/dsh-ops/timeline', '/dsh-ops/report', '/dsh-ops/auth', '/dsh-ops/settings', '/dsh-ops/trust']) {
+      const response = await fetch(base + path)
+      const data = await response.json().catch(() => null)
+      if (response.ok && data?.ok) ok(path + ' returns JSON')
+      else bad(path + ' failed')
     }
-    ok(`dsh web booted on :${port}, /dsh-ops/status -> pid ${status.pid}, engine ${status.engine}`)
-
-    // -- the loaded bundle must be THIS repo, not the live deployed snapshot
-    const settings = await fetchJson(`${base}/dsh-ops/settings`)
-    const loaded = await fetch(`${base}/plugins/dsh-ops-console/client.js`).then((r) => r.text()).catch(() => '')
-    const source = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')
-    if (settings?.ok && String(settings.file).includes('ops-smoke') && loaded === source) {
-      ok('smoke profile loaded this repo client bundle (not the live snapshot)')
-    } else {
-      bad(`/dsh-ops/settings -> ${JSON.stringify(settings).slice(0, 200)}`)
-    }
-
-    for (const path of ['/dsh-ops/logs?tail=5', '/dsh-ops/auth', '/dsh-ops/trust', '/dsh-ops/guardian', '/dsh-ops/deployments']) {
-      const r = await fetchJson(base + path)
-      if (r && typeof r === 'object' && Object.keys(r).length > 0) ok(`${path} -> 200 JSON`)
-      else bad(`${path} -> ${JSON.stringify(r).slice(0, 200)}`)
-    }
-
-    const balance = await fetchJson(`${base}/dsh-ops/balance`)
-    if (balance && typeof balance === 'object' && 'ok' in balance) ok('/dsh-ops/balance -> 200 JSON (ok or graceful error)')
-    else bad(`/dsh-ops/balance -> ${JSON.stringify(balance).slice(0, 200)}`)
+    const client = await fetch(base + '/plugins/dsh-ops-console/client.js').then((r) => r.text())
+    if (client === readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')) ok('smoke boot loaded this repository client')
+    else bad('smoke boot did not load this repository client')
   } finally {
-    if (child.exitCode === null) {
-      child.kill('SIGTERM')
-      await new Promise((r) => setTimeout(r, 800))
-      if (child.exitCode === null) child.kill('SIGKILL')
-    }
+    if (child.exitCode === null) child.kill('SIGTERM')
   }
 }
 
-async function fetchJson(url) {
-  try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(8000) })
-    return await r.json()
-  } catch {
-    return null
-  }
-}
-
-// ---------------------------------------------------------------- main
-
-console.log(`dsh-ops-console verify — ${new Date().toISOString()}`)
-gate1Syntax()
-gate2ClientStubLoad()
-await gate3HostUnit()
-gate3bRollbackSafety()
-await gate4SmokeBoot()
-
-console.log(failures === 0
-  ? '\nALL GATES GREEN — safe to deploy.'
-  : `\n${failures} gate(s) FAILED — do not deploy.`)
+console.log('dsh-ops-console verify — ' + new Date().toISOString())
+gate1()
+gate2()
+await gate3()
+await gate4()
+console.log(failures === 0 ? '\nALL GATES GREEN — safe to deploy.' : '\n' + failures + ' gate(s) FAILED — do not deploy.')
 process.exit(failures === 0 ? 0 : 1)

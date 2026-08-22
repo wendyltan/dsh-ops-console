@@ -1,7 +1,7 @@
 {
   "name": "dsh-ops-console",
-  "version": "0.3.0",
-  "description": "DeepSeek Harness 服务器运营控制台：余额/用量、服务器状态与日志、一键重启、引擎版本更新、Tailscale 远程访问开关与可信主机编辑（增删 + 暴露面审计）。",
+  "version": "0.4.0",
+  "description": "DeepSeek Harness 的浏览器/手机运行帮助台：用用户语言说明状态、引导检查问题并生成脱敏诊断报告。",
   "type": "module",
   "main": "lib/index.js",
   "license": "MIT",
@@ -17,8 +17,9 @@
     "dsh-plugin",
     "ops",
     "console",
-    "balance",
-    "tailscale"
+    "diagnostics",
+    "tailscale",
+    "remote-access"
   ],
   "exports": {
     ".": {
@@ -37,14 +38,6 @@
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-slots"
-      ]
-    },
-    "guardian": {
-      "protocolVersion": 1,
-      "healthPath": "/dsh-ops/status",
-      "snapshotLinkedBundle": true,
-      "profileFiles": [
-        ".dsh-ops.json"
       ]
     }
   },
