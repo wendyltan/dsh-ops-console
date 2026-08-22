@@ -173,18 +173,14 @@ async function gate3HostUnit() {
       effect: (fn) => fn(),
     }
     const previousGuardian = process.env.DSH_GUARDIAN
+    const previousAdminToken = process.env.DSH_OPS_ADMIN_TOKEN
     process.env.DSH_GUARDIAN = join(SMOKE_HOME, 'missing-guardian.mjs')
-    let mod
-    try {
-      mod = await import(new URL(`../lib/index.js?verify=${Date.now()}`, import.meta.url))
-    } finally {
-      if (previousGuardian === undefined) delete process.env.DSH_GUARDIAN
-      else process.env.DSH_GUARDIAN = previousGuardian
-    }
+    process.env.DSH_OPS_ADMIN_TOKEN = 'v'.repeat(48)
+    const mod = await import(new URL(`../lib/index.js?verify=${Date.now()}`, import.meta.url))
     mod.apply(ctx)
 
     // -- tools: all five present, schema shape sound
-    const expected = ['ops_status', 'ops_balance', 'ops_logs', 'ops_tailscale', 'ops_preflight', 'ops_restart']
+    const expected = ['ops_status', 'ops_balance', 'ops_logs', 'ops_tailscale', 'ops_preflight']
     const names = toolDefs.map((d) => d.name)
     for (const want of expected) {
       if (!names.includes(want)) bad(`tool ${want} not registered (got: ${names.join(', ') || 'none'})`)
@@ -206,11 +202,6 @@ async function gate3HostUnit() {
     if (toolDefs.length === expected.length && names.every((n) => expected.includes(n))) {
       ok(`all ${expected.length} ops_* tools register with valid schemas`)
     }
-    const restartTool = toolDefs.find((d) => d.name === 'ops_restart')
-    const unavailable = await restartTool?.execute({})
-    if (unavailable?.ok === false && unavailable?.guardian === false) ok('ops_restart refuses unsafe fallback when guardian is missing')
-    else bad(`ops_restart must refuse without guardian: ${JSON.stringify(unavailable)}`)
-
     // -- routes: GET /dsh-ops/status answers 200 JSON
     const statusRoute = handlers.get('/dsh-ops/status')
     if (!statusRoute) { bad('/dsh-ops/status route missing'); return }
@@ -229,9 +220,14 @@ async function gate3HostUnit() {
       bad('POST /dsh-ops/restart route missing')
     }
     if (restartRoute) {
+      const unauthenticated = await invoke(restartRoute, {
+        method: 'POST', url: '/dsh-ops/restart', headers: { origin: 'http://localhost', host: 'localhost' },
+      })
+      if (unauthenticated.status === 401 && JSON.parse(unauthenticated.body).authRequired === true) ok('POST /dsh-ops/restart requires an admin token')
+      else bad(`POST /dsh-ops/restart accepted a missing token: HTTP ${unauthenticated.status} ${unauthenticated.body.slice(0, 200)}`)
       const r = await invoke(restartRoute, {
         method: 'POST', url: '/dsh-ops/restart',
-        headers: { origin: 'http://localhost', host: 'localhost' },
+        headers: { origin: 'http://localhost', host: 'localhost', 'x-dsh-ops-token': 'v'.repeat(48) },
       })
       if (r.status === 503 && JSON.parse(r.body).guardian === false) ok('POST /dsh-ops/restart -> 503 without guardian (no naked restart)')
       else bad(`POST /dsh-ops/restart unsafe fallback: HTTP ${r.status} ${r.body.slice(0, 200)}`)
@@ -256,7 +252,7 @@ async function gate3HostUnit() {
       const route = incompatibleHandlers.get('/dsh-ops/restart')
       const r = await invoke(route, {
         method: 'POST', url: '/dsh-ops/restart',
-        headers: { origin: 'http://localhost', host: 'localhost' },
+        headers: { origin: 'http://localhost', host: 'localhost', 'x-dsh-ops-token': 'v'.repeat(48) },
       })
       if (r.status === 503 && JSON.parse(r.body).error?.includes('unsupported guardian protocol')) {
         ok('restart refuses an unsupported Guardian protocol')
@@ -265,6 +261,10 @@ async function gate3HostUnit() {
       if (oldGuardian === undefined) delete process.env.DSH_GUARDIAN
       else process.env.DSH_GUARDIAN = oldGuardian
     }
+    if (previousGuardian === undefined) delete process.env.DSH_GUARDIAN
+    else process.env.DSH_GUARDIAN = previousGuardian
+    if (previousAdminToken === undefined) delete process.env.DSH_OPS_ADMIN_TOKEN
+    else process.env.DSH_OPS_ADMIN_TOKEN = previousAdminToken
   } catch (error) {
     bad(`host unit harness crashed: ${error?.stack ?? error}`)
   }
@@ -368,7 +368,7 @@ async function gate4SmokeBoot() {
       bad(`/dsh-ops/settings -> ${JSON.stringify(settings).slice(0, 200)}`)
     }
 
-    for (const path of ['/dsh-ops/logs?tail=5', '/dsh-ops/version', '/dsh-ops/trust', '/dsh-ops/guardian', '/dsh-ops/deployments']) {
+    for (const path of ['/dsh-ops/logs?tail=5', '/dsh-ops/auth', '/dsh-ops/trust', '/dsh-ops/guardian', '/dsh-ops/deployments']) {
       const r = await fetchJson(base + path)
       if (r && typeof r === 'object' && Object.keys(r).length > 0) ok(`${path} -> 200 JSON`)
       else bad(`${path} -> ${JSON.stringify(r).slice(0, 200)}`)

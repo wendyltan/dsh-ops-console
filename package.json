@@ -1,6 +1,6 @@
 {
   "name": "dsh-ops-console",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "DeepSeek Harness 服务器运营控制台：余额/用量、服务器状态与日志、一键重启、引擎版本更新、Tailscale 远程访问开关与可信主机编辑（增删 + 暴露面审计）。",
   "type": "module",
   "main": "lib/index.js",

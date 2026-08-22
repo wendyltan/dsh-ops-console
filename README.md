@@ -18,7 +18,7 @@
 | 项目 | 负责什么 | 依赖关系 |
 | --- | --- | --- |
 | **[dsh-ops-console](https://github.com/wendyltan/dsh-ops-console)** | Harness Web 内的运维界面、HTTP 路由、远程管理与 Agent 自运维工具 | 可独立安装 |
-| **[dsh-desktop](https://github.com/wendyltan/dsh-desktop)** | macOS 原生客户端，以及进程外 Guardian、安全启动、自动恢复和原生服务保护面板 | 启用增强保护能力 |
+| **[dsh-desktop](https://github.com/wendyltan/dsh-desktop)** | macOS 原生客户端，以及进程外 Guardian、安全启动、自动恢复、引擎更新和原生服务保护面板 | 启用增强保护能力 |
 
 dsh-ops-console 本身不是 dsh-desktop 的强制插件，dsh-desktop 也不依赖本插件启动：
 
@@ -33,11 +33,11 @@ Guardian 的唯一源码和安装生命周期属于 dsh-desktop；本插件只�
 | Tab | 内容 |
 | --- | --- |
 | **概览** | DeepSeek 账户余额（赠金/充值/已用，**低于预警阈值时黄色徽章提示**，可按设置自动刷新）+ 官方充值/用量入口；Harness 引擎版本（**自动探测运行中的 dsh 包版本**）与 npm 最新版对比 |
-| **服务器** | 服务状态、外部 Guardian 版本/协议与防护模式、黄金快照/部署备份数量、完整预检、安全重启、黄金版本恢复、最近日志 |
+| **服务器** | 服务状态、当前引擎、外部 Guardian 版本/协议与防护模式、黄金快照/部署备份数量、完整预检、安全重启、黄金版本恢复、最近日志 |
 | **远程访问** | Tailscale `serve :3080` 开关、tailnet 域名与访问地址、**可信主机编辑**（`connection.trustedHosts` 增删 + 暴露面审计：当前 tailnet 域名是否在信任名单里、一键加入、保存后重启生效） |
 | **设置** | 余额自动刷新间隔（秒，0=关闭）、余额预警阈值（元）、日志条数，持久化到 profile 的 `.dsh-ops.json` |
 
-界面支持**中/英双语**并记住选择。插件另注册 `ops_status`、`ops_balance`、`ops_logs`、`ops_tailscale`、`ops_preflight`、`ops_restart` 六个 Agent 工具；所有工具 schema 都是显式的 object JSON Schema。Agent 的模型、预设和权限仍由 Harness 原生设置管理，本插件只负责运维面。
+界面支持**中/英双语**并记住选择。插件另注册 `ops_status`、`ops_balance`、`ops_logs`、`ops_tailscale`、`ops_preflight` 五个 Agent 工具；重启只允许由用户在受保护的运维界面确认执行。所有工具 schema 都是显式的 object JSON Schema。Agent 的模型、预设和权限仍由 Harness 原生设置管理，本插件只负责运维面。
 
 ## 安装
 
@@ -118,7 +118,7 @@ dsh plugin --profile web remove dsh-ops-console
 ## 使用
 
 1. 打开 `dsh web` → **设置 → 运维控制台**（右上角可切 中/EN）
-2. 概览 Tab 看余额（低于预警阈值会黄标）与版本；服务器 Tab 看状态、Guardian、预检与日志（勾选“实时跟尾”自动滚动）；设置 Tab 调整自动刷新间隔、预警阈值和日志条数
+2. 概览 Tab 看余额（低于预警阈值会黄标）；服务器 Tab 看当前引擎、Guardian、预检、可轮询的重启进度与日志（勾选“实时跟尾”自动滚动）；设置 Tab 调整自动刷新间隔、预警阈值和日志条数
 3. 远程访问 Tab 开/关 Tailscale；可信主机卡片可增删主机：输入 `host` 或 `host:port` 添加（服务端校验裸 authority），删除按钮移除；修改保存在 `cordis.patch.yml`，点「立即重启」让浏览器信任围栏加载新名单
 4. 手机在 tailnet 内打开 `https://<你的mac>.<tailnet>.ts.net`，同一面板可直接操作
 
@@ -161,6 +161,8 @@ cd dsh-ops-console
 5. **回滚**：`node scripts/rollback.mjs` 恢复最新内部备份并再次预检；也可从控制台恢复 Guardian 的 last-known-good 黄金快照。
 
 > Guardian、watchdog 和安全模式运行在 DSH 进程之外。即使 profile 或插件导致 DSH 无法启动，外部恢复链仍然可用。
+
+> 远程页面的所有写操作都需要运维令牌。首次从 `http://127.0.0.1:3080` 打开设置页时会自动生成并显示；将它复制到受信任的 Tailscale 设备后，粘贴到“设置 → 远程运维令牌”。令牌仅保存在本机 `~/.dsh/ops-console/admin-token`（权限 0600）和浏览器本地存储中。
 
 > `scripts/deploy.mjs` 是本机的增强安全部署流程，因此要求 dsh-desktop Guardian 已安装；普通用户仍可通过 npm、GitHub 或插件市场独立安装本插件。
 
