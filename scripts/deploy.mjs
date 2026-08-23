@@ -22,7 +22,7 @@ const PROFILE = join(DSH_HOME, 'profiles', 'web')
 const liveLink = join(PROFILE, 'node_modules', 'dsh-ops-console')
 const packageFile = join(PROFILE, 'package.json')
 const lockFile = join(PROFILE, 'pnpm-lock.yaml')
-const ITEMS = ['package.json', 'lib', 'scripts', 'cordis.patch.yml', 'README.md', 'LICENSE', '用户体验重构TODO.md']
+const ITEMS = ['package.json', 'lib', 'scripts', 'cordis.patch.yml', 'README.md', 'LICENSE']
 const KEEP_BACKUPS = 8
 const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
 

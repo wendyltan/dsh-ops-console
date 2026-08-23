@@ -1,7 +1,7 @@
 {
   "name": "dsh-ops-console",
-  "version": "0.4.0",
-  "description": "DeepSeek Harness 的浏览器/手机运行帮助台：用用户语言说明状态、引导检查问题并生成脱敏诊断报告。",
+  "version": "0.4.1",
+  "description": "DeepSeek Harness 的浏览器/手机运行台：查看运行状态、完成基础诊断，并在需要时管理远程访问。",
   "type": "module",
   "main": "lib/index.js",
   "license": "MIT",
