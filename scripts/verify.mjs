@@ -43,8 +43,9 @@ function gate1() {
   }
   try {
     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
-    if (!pkg?.dsh?.guardian && !JSON.stringify(pkg).includes('guardian')) ok('manifest has no Guardian integration dependency')
-    else bad('manifest still declares a Guardian integration')
+    const guardian = pkg?.dsh?.guardian
+    if (guardian?.healthPath === '/dsh-ops/status' && Number(guardian?.protocolVersion) >= 1) ok('manifest declares a passive Guardian health contract')
+    else bad('manifest must declare dsh.guardian.healthPath = /dsh-ops/status (protocolVersion >= 1)')
   } catch (error) { bad('package.json invalid: ' + error.message) }
 }
 
@@ -90,22 +91,27 @@ async function gate3() {
   try {
     const mod = await import(new URL('../lib/index.js?verify=' + Date.now(), import.meta.url))
     mod.apply({ credentials: undefined, webServer: { register: (route) => { handlers.set(route.path, route); return () => {} } }, effect: (fn) => fn() })
-    const expected = ['/dsh-ops/status', '/dsh-ops/summary', '/dsh-ops/diagnose', '/dsh-ops/timeline', '/dsh-ops/report', '/dsh-ops/auth']
+    const expected = ['/dsh-ops/status', '/dsh-ops/tailscale', '/dsh-ops/tailscale/selftest', '/dsh-ops/trust', '/dsh-ops/auth']
     for (const path of expected) {
       const route = handlers.get(path)
       if (!route) { bad(path + ' route missing'); continue }
-      const result = await invoke(route, { url: path + (path === '/dsh-ops/diagnose' ? '?symptom=remote' : '') })
+      const result = await invoke(route, { url: path })
       const data = JSON.parse(result.output)
       if (result.status === 200 && data.ok === true) ok(path + ' returns usable JSON')
       else bad(path + ' failed: ' + result.output.slice(0, 300))
     }
+    const removed = ['/dsh-ops/summary', '/dsh-ops/diagnose', '/dsh-ops/timeline', '/dsh-ops/report', '/dsh-ops/balance', '/dsh-ops/settings', '/dsh-ops/settings/save', '/dsh-ops/logs']
+    for (const path of removed) {
+      if (handlers.has(path)) bad(path + ' route should have been removed')
+      else ok(path + ' is no longer registered')
+    }
     if (!handlers.has('/dsh-ops/guardian') && !handlers.has('/dsh-ops/restart') && !handlers.has('/dsh-ops/preflight')) ok('no Guardian control routes are registered')
     else bad('obsolete Guardian control route remains registered')
-    const save = handlers.get('/dsh-ops/settings/save')
-    const denied = await invoke(save, { method: 'POST', url: '/dsh-ops/settings/save', headers: { origin: 'http://localhost', host: 'localhost' }, body: JSON.stringify({ settings: {} }) })
+    const add = handlers.get('/dsh-ops/trust/add')
+    const denied = await invoke(add, { method: 'POST', url: '/dsh-ops/trust/add', headers: { origin: 'http://localhost', host: 'localhost' }, body: JSON.stringify({ host: 'mac-mini.ts.net' }) })
     if (denied.status === 401 && JSON.parse(denied.output).authRequired === true) ok('writes still require an admin token')
     else bad('write authentication guard failed: ' + denied.output)
-    const crossSite = await invoke(save, { method: 'POST', url: '/dsh-ops/settings/save', headers: {}, body: '{}' })
+    const crossSite = await invoke(add, { method: 'POST', url: '/dsh-ops/trust/add', headers: {}, body: '{}' })
     if (crossSite.status === 403) ok('writes still reject untrusted origins')
     else bad('CSRF guard failed: ' + crossSite.output)
   } catch (error) { bad('route contract crashed: ' + (error.stack || error)) }
@@ -155,12 +161,12 @@ async function gate4() {
     let ready = null
     const end = Date.now() + 90000
     while (Date.now() < end && child.exitCode === null) {
-      try { const r = await fetch(base + '/dsh-ops/summary'); if (r.ok) { ready = await r.json(); break } } catch {}
+      try { const r = await fetch(base + '/dsh-ops/status'); if (r.ok) { ready = await r.json(); break } } catch {}
       await new Promise((resolve) => setTimeout(resolve, 500))
     }
-    if (!ready?.ok) { bad('smoke server never answered /dsh-ops/summary'); return }
-    ok('dsh web booted and summary is available')
-    for (const path of ['/dsh-ops/diagnose?symptom=history', '/dsh-ops/timeline', '/dsh-ops/report', '/dsh-ops/auth', '/dsh-ops/settings', '/dsh-ops/trust']) {
+    if (!ready?.ok) { bad('smoke server never answered /dsh-ops/status'); return }
+    ok('dsh web booted and status is available')
+    for (const path of ['/dsh-ops/tailscale', '/dsh-ops/tailscale/selftest', '/dsh-ops/trust', '/dsh-ops/auth']) {
       const response = await fetch(base + path)
       const data = await response.json().catch(() => null)
       if (response.ok && data?.ok) ok(path + ' returns JSON')
