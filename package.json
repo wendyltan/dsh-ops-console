@@ -1,7 +1,7 @@
 {
   "name": "dsh-ops-console",
-  "version": "0.4.1",
-  "description": "DeepSeek Harness 的浏览器/手机运行台：查看运行状态、完成基础诊断，并在需要时管理远程访问。",
+  "version": "0.5.0",
+  "description": "DeepSeek Harness 的远程访问控制台：开启/关闭 Tailscale 远程访问，并管理可信主机与运维令牌。",
   "type": "module",
   "main": "lib/index.js",
   "license": "MIT",
@@ -17,7 +17,6 @@
     "dsh-plugin",
     "ops",
     "console",
-    "diagnostics",
     "tailscale",
     "remote-access"
   ],
