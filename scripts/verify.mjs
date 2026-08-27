@@ -4,7 +4,7 @@
  * HTTP routes and a real throwaway dsh web boot. No Guardian is required.
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -83,10 +83,49 @@ async function gate3() {
   const home = mkdtempSync(join(tmpdir(), 'dsh-ops-verify-'))
   const oldHome = process.env.DSH_HOME
   const oldToken = process.env.DSH_OPS_ADMIN_TOKEN
+  const oldTailscale = process.env.DSH_OPS_TAILSCALE_BIN
+  const oldTailscaleState = process.env.DSH_OPS_TEST_TS_STATE
+  const oldTailscaleLog = process.env.DSH_OPS_TEST_TS_LOG
   process.env.DSH_HOME = home
   process.env.DSH_OPS_ADMIN_TOKEN = 'v'.repeat(48)
   mkdirSync(join(home, 'profiles', 'web'), { recursive: true })
   writeFileSync(join(home, 'profiles', 'web', 'cordis.patch.yml'), '[]\n')
+  const tailscaleState = join(home, 'tailscale-serve.json')
+  const tailscaleLog = join(home, 'tailscale.log')
+  const fakeTailscale = join(home, 'tailscale.mjs')
+  writeFileSync(tailscaleState, JSON.stringify({
+    Web: {
+      'dsh-host.example.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:3080' } } },
+      'other-service.example.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:9999' } } },
+    },
+  }))
+  writeFileSync(fakeTailscale, `#!/usr/bin/env node
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
+const args = process.argv.slice(2)
+appendFileSync(process.env.DSH_OPS_TEST_TS_LOG, JSON.stringify(args) + '\\n')
+if (args[0] === 'status' && args[1] === '--json') {
+  process.stdout.write(JSON.stringify({ Self: { DNSName: 'dsh-host.example.ts.net.' }, Peer: {} }))
+} else if (args[0] === 'serve' && args[1] === 'status') {
+  process.stdout.write(readFileSync(process.env.DSH_OPS_TEST_TS_STATE, 'utf8'))
+} else if (args[0] === 'serve' && args.at(-1) === 'off') {
+  const config = JSON.parse(readFileSync(process.env.DSH_OPS_TEST_TS_STATE, 'utf8'))
+  for (const authority of Object.keys(config.Web || {})) {
+    const handlers = config.Web[authority]?.Handlers || {}
+    for (const path of Object.keys(handlers)) {
+      if (handlers[path]?.Proxy === 'http://127.0.0.1:3080') delete handlers[path]
+    }
+    if (Object.keys(handlers).length === 0) delete config.Web[authority]
+  }
+  writeFileSync(process.env.DSH_OPS_TEST_TS_STATE, JSON.stringify(config))
+} else {
+  process.stderr.write('unexpected fake tailscale command: ' + args.join(' '))
+  process.exitCode = 2
+}
+`)
+  chmodSync(fakeTailscale, 0o755)
+  process.env.DSH_OPS_TAILSCALE_BIN = fakeTailscale
+  process.env.DSH_OPS_TEST_TS_STATE = tailscaleState
+  process.env.DSH_OPS_TEST_TS_LOG = tailscaleLog
   const handlers = new Map()
   try {
     const mod = await import(new URL('../lib/index.js?verify=' + Date.now(), import.meta.url))
@@ -114,10 +153,35 @@ async function gate3() {
     const crossSite = await invoke(add, { method: 'POST', url: '/dsh-ops/trust/add', headers: {}, body: '{}' })
     if (crossSite.status === 403) ok('writes still reject untrusted origins')
     else bad('CSRF guard failed: ' + crossSite.output)
+
+    const authHeaders = { origin: 'http://localhost', host: 'localhost', 'x-dsh-ops-token': 'v'.repeat(48) }
+    const disable = handlers.get('/dsh-ops/tailscale/disable')
+    const disabled = await invoke(disable, { method: 'POST', url: '/dsh-ops/tailscale/disable', headers: authHeaders })
+    const disabledData = JSON.parse(disabled.output)
+    const remainingServe = readFileSync(tailscaleState, 'utf8')
+    const tailscaleCalls = readFileSync(tailscaleLog, 'utf8')
+    if (disabled.status === 200 && disabledData.ok === true && !remainingServe.includes('3080') && remainingServe.includes('9999')) {
+      ok('disabling Harness preserves unrelated Tailscale Serve entries')
+    } else bad('scoped Tailscale disable failed: ' + disabled.output + ' state=' + remainingServe)
+    if (!tailscaleCalls.includes('reset') && tailscaleCalls.includes('"off"')) ok('disable uses scoped off, never global serve reset')
+    else bad('disable issued an unsafe Tailscale command: ' + tailscaleCalls)
+
+    writeFileSync(tailscaleState, JSON.stringify({
+      Web: { 'dsh-host.example.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:9999' } } } },
+    }))
+    await new Promise((resolve) => setTimeout(resolve, 4100))
+    const enable = handlers.get('/dsh-ops/tailscale/enable')
+    const enabled = await invoke(enable, { method: 'POST', url: '/dsh-ops/tailscale/enable', headers: authHeaders })
+    const enabledData = JSON.parse(enabled.output)
+    if (enabled.status === 200 && enabledData.ok === false && enabledData.conflict === true) ok('existing HTTPS root proxy is never overwritten')
+    else bad('Serve root conflict was not rejected: ' + enabled.output)
   } catch (error) { bad('route contract crashed: ' + (error.stack || error)) }
   finally {
     if (oldHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = oldHome
     if (oldToken === undefined) delete process.env.DSH_OPS_ADMIN_TOKEN; else process.env.DSH_OPS_ADMIN_TOKEN = oldToken
+    if (oldTailscale === undefined) delete process.env.DSH_OPS_TAILSCALE_BIN; else process.env.DSH_OPS_TAILSCALE_BIN = oldTailscale
+    if (oldTailscaleState === undefined) delete process.env.DSH_OPS_TEST_TS_STATE; else process.env.DSH_OPS_TEST_TS_STATE = oldTailscaleState
+    if (oldTailscaleLog === undefined) delete process.env.DSH_OPS_TEST_TS_LOG; else process.env.DSH_OPS_TEST_TS_LOG = oldTailscaleLog
     rmSync(home, { recursive: true, force: true })
   }
 }
