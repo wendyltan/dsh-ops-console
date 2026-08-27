@@ -1,7 +1,7 @@
 {
   "name": "dsh-ops-console",
-  "version": "0.5.1",
-  "description": "DeepSeek Harness 的远程访问控制台：安全开启/关闭 Tailscale 远程入口，并管理 Harness 接受的访问地址与运维令牌。",
+  "version": "0.6.0",
+  "description": "DeepSeek Harness 的远程访问控制台：安全管理 Tailscale 入口、远程设备配对与 Harness 接受的访问地址。",
   "type": "module",
   "main": "lib/index.js",
   "license": "MIT",

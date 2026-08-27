@@ -86,12 +86,14 @@ async function gate3() {
   const oldTailscale = process.env.DSH_OPS_TAILSCALE_BIN
   const oldTailscaleState = process.env.DSH_OPS_TEST_TS_STATE
   const oldTailscaleLog = process.env.DSH_OPS_TEST_TS_LOG
+  const oldTailscaleRuntime = process.env.DSH_OPS_TEST_TS_RUNTIME
   process.env.DSH_HOME = home
   process.env.DSH_OPS_ADMIN_TOKEN = 'v'.repeat(48)
   mkdirSync(join(home, 'profiles', 'web'), { recursive: true })
   writeFileSync(join(home, 'profiles', 'web', 'cordis.patch.yml'), '[]\n')
   const tailscaleState = join(home, 'tailscale-serve.json')
   const tailscaleLog = join(home, 'tailscale.log')
+  const tailscaleRuntime = join(home, 'tailscale-runtime.json')
   const fakeTailscale = join(home, 'tailscale.mjs')
   writeFileSync(tailscaleState, JSON.stringify({
     Web: {
@@ -99,12 +101,13 @@ async function gate3() {
       'other-service.example.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:9999' } } },
     },
   }))
+  writeFileSync(tailscaleRuntime, JSON.stringify({ BackendState: 'Running', Health: [], Self: { DNSName: 'dsh-host.example.ts.net.', Online: true }, Peer: {} }))
   writeFileSync(fakeTailscale, `#!/usr/bin/env node
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 const args = process.argv.slice(2)
 appendFileSync(process.env.DSH_OPS_TEST_TS_LOG, JSON.stringify(args) + '\\n')
 if (args[0] === 'status' && args[1] === '--json') {
-  process.stdout.write(JSON.stringify({ Self: { DNSName: 'dsh-host.example.ts.net.' }, Peer: {} }))
+  process.stdout.write(readFileSync(process.env.DSH_OPS_TEST_TS_RUNTIME, 'utf8'))
 } else if (args[0] === 'serve' && args[1] === 'status') {
   process.stdout.write(readFileSync(process.env.DSH_OPS_TEST_TS_STATE, 'utf8'))
 } else if (args[0] === 'serve' && args.at(-1) === 'off') {
@@ -126,6 +129,7 @@ if (args[0] === 'status' && args[1] === '--json') {
   process.env.DSH_OPS_TAILSCALE_BIN = fakeTailscale
   process.env.DSH_OPS_TEST_TS_STATE = tailscaleState
   process.env.DSH_OPS_TEST_TS_LOG = tailscaleLog
+  process.env.DSH_OPS_TEST_TS_RUNTIME = tailscaleRuntime
   const handlers = new Map()
   try {
     const mod = await import(new URL('../lib/index.js?verify=' + Date.now(), import.meta.url))
@@ -139,6 +143,16 @@ if (args[0] === 'status' && args[1] === '--json') {
       if (result.status === 200 && data.ok === true) ok(path + ' returns usable JSON')
       else bad(path + ' failed: ' + result.output.slice(0, 300))
     }
+    for (const path of ['/dsh-ops/pairing/create', '/dsh-ops/pairing/redeem', '/dsh-ops/remote/checkin', '/dsh-ops/sessions', '/dsh-ops/sessions/revoke', '/dsh-ops/sessions/revoke-all', '/dsh-ops/auth/rotate-master']) {
+      if (handlers.has(path)) ok(path + ' route registered')
+      else bad(path + ' route missing')
+    }
+    const publicStatus = JSON.parse((await invoke(handlers.get('/dsh-ops/status'), { url: '/dsh-ops/status' })).output)
+    if (!('pid' in publicStatus) && !('port' in publicStatus) && !('engine' in publicStatus) && !('url' in publicStatus)) ok('public health omits process and engine details')
+    else bad('public health leaks implementation details: ' + JSON.stringify(publicStatus))
+    const publicTrust = JSON.parse((await invoke(handlers.get('/dsh-ops/trust'), { url: '/dsh-ops/trust' })).output)
+    if (!('patchFile' in publicTrust)) ok('trust response omits the local profile path')
+    else bad('trust response leaks local path: ' + JSON.stringify(publicTrust))
     const removed = ['/dsh-ops/summary', '/dsh-ops/diagnose', '/dsh-ops/timeline', '/dsh-ops/report', '/dsh-ops/balance', '/dsh-ops/settings', '/dsh-ops/settings/save', '/dsh-ops/logs']
     for (const path of removed) {
       if (handlers.has(path)) bad(path + ' route should have been removed')
@@ -155,6 +169,37 @@ if (args[0] === 'status' && args[1] === '--json') {
     else bad('CSRF guard failed: ' + crossSite.output)
 
     const authHeaders = { origin: 'http://localhost', host: 'localhost', 'x-dsh-ops-token': 'v'.repeat(48) }
+    const remoteHeaders = { origin: 'https://dsh-host.example.ts.net', host: 'dsh-host.example.ts.net' }
+    const created = await invoke(handlers.get('/dsh-ops/pairing/create'), { method: 'POST', url: '/dsh-ops/pairing/create', headers: authHeaders })
+    const createdData = JSON.parse(created.output)
+    if (created.status === 200 && /^\d{6}$/.test(createdData.code)) ok('local page creates a six-digit expiring pairing code')
+    else bad('pairing code creation failed: ' + created.output)
+    const redeemed = await invoke(handlers.get('/dsh-ops/pairing/redeem'), {
+      method: 'POST', url: '/dsh-ops/pairing/redeem', headers: remoteHeaders,
+      body: JSON.stringify({ code: createdData.code, label: 'Test phone' }),
+    })
+    const redeemedData = JSON.parse(redeemed.output)
+    if (redeemed.status === 200 && redeemedData.ok && typeof redeemedData.token === 'string') ok('remote browser redeems pairing code for an independent session')
+    else bad('pairing redemption failed: ' + redeemed.output)
+    const sessionHeaders = { ...remoteHeaders, 'x-dsh-ops-token': redeemedData.token }
+    const remoteAuth = JSON.parse((await invoke(handlers.get('/dsh-ops/auth'), { url: '/dsh-ops/auth', headers: sessionHeaders })).output)
+    if (remoteAuth.paired === true && remoteAuth.token === undefined) ok('remote auth recognizes the session without disclosing the master token')
+    else bad('remote session auth failed: ' + JSON.stringify(remoteAuth))
+    const checkedIn = JSON.parse((await invoke(handlers.get('/dsh-ops/remote/checkin'), { method: 'POST', url: '/dsh-ops/remote/checkin', headers: sessionHeaders })).output)
+    if (checkedIn.ok && checkedIn.verifiedAt) ok('paired remote browser records an actual verification check-in')
+    else bad('remote verification check-in failed: ' + JSON.stringify(checkedIn))
+    const sessionList = JSON.parse((await invoke(handlers.get('/dsh-ops/sessions'), { url: '/dsh-ops/sessions', headers: authHeaders })).output)
+    if (sessionList.sessions?.length === 1 && sessionList.sessions[0].label === 'Test phone') ok('local page lists paired sessions without token hashes')
+    else bad('paired session listing failed: ' + JSON.stringify(sessionList))
+    if (!JSON.stringify(sessionList).includes('tokenHash')) ok('session listing never exposes token hashes')
+    else bad('session listing leaked a token hash')
+
+    const validAdd = await invoke(add, { method: 'POST', url: '/dsh-ops/trust/add', headers: authHeaders, body: JSON.stringify({ host: 'extra.example.ts.net' }) })
+    const backupDir = join(home, 'ops-console', 'config-backups')
+    const tempFiles = readdirSync(join(home, 'profiles', 'web')).filter((name) => name.includes('.new-'))
+    if (validAdd.status === 200 && JSON.parse(validAdd.output).ok && readdirSync(backupDir).length === 1 && tempFiles.length === 0) ok('trusted-host update uses atomic replacement and a bounded backup')
+    else bad('atomic trusted-host update failed: ' + validAdd.output)
+
     const disable = handlers.get('/dsh-ops/tailscale/disable')
     const disabled = await invoke(disable, { method: 'POST', url: '/dsh-ops/tailscale/disable', headers: authHeaders })
     const disabledData = JSON.parse(disabled.output)
@@ -175,6 +220,21 @@ if (args[0] === 'status' && args[1] === '--json') {
     const enabledData = JSON.parse(enabled.output)
     if (enabled.status === 200 && enabledData.ok === false && enabledData.conflict === true) ok('existing HTTPS root proxy is never overwritten')
     else bad('Serve root conflict was not rejected: ' + enabled.output)
+
+    writeFileSync(tailscaleState, JSON.stringify({ Web: { 'dsh-host.example.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:3080' } } } } }))
+    writeFileSync(tailscaleRuntime, JSON.stringify({ BackendState: 'Stopped', Health: ['Tailscale is stopped.'], Self: { DNSName: 'dsh-host.example.ts.net.', Online: false } }))
+    await new Promise((resolve) => setTimeout(resolve, 4100))
+    const stoppedAccess = JSON.parse((await invoke(handlers.get('/dsh-ops/tailscale'), { url: '/dsh-ops/tailscale' })).output)
+    const stoppedCheck = JSON.parse((await invoke(handlers.get('/dsh-ops/tailscale/selftest'), { url: '/dsh-ops/tailscale/selftest' })).output)
+    if (stoppedAccess.tailscaleRunning === false && stoppedAccess.serveActive === true && stoppedCheck.verdict === 'tailscale-stopped') ok('stopped Tailscale is distinct from a missing Serve configuration')
+    else bad('stopped Tailscale state was misreported: ' + JSON.stringify({ stoppedAccess, stoppedCheck }))
+
+    const revoked = JSON.parse((await invoke(handlers.get('/dsh-ops/sessions/revoke'), {
+      method: 'POST', url: '/dsh-ops/sessions/revoke', headers: authHeaders, body: JSON.stringify({ id: redeemedData.session.id }),
+    })).output)
+    const afterRevoke = JSON.parse((await invoke(handlers.get('/dsh-ops/auth'), { url: '/dsh-ops/auth', headers: sessionHeaders })).output)
+    if (revoked.ok && revoked.removed === 1 && afterRevoke.paired === false) ok('local page can revoke one remote session immediately')
+    else bad('remote session revocation failed')
   } catch (error) { bad('route contract crashed: ' + (error.stack || error)) }
   finally {
     if (oldHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = oldHome
@@ -182,6 +242,7 @@ if (args[0] === 'status' && args[1] === '--json') {
     if (oldTailscale === undefined) delete process.env.DSH_OPS_TAILSCALE_BIN; else process.env.DSH_OPS_TAILSCALE_BIN = oldTailscale
     if (oldTailscaleState === undefined) delete process.env.DSH_OPS_TEST_TS_STATE; else process.env.DSH_OPS_TEST_TS_STATE = oldTailscaleState
     if (oldTailscaleLog === undefined) delete process.env.DSH_OPS_TEST_TS_LOG; else process.env.DSH_OPS_TEST_TS_LOG = oldTailscaleLog
+    if (oldTailscaleRuntime === undefined) delete process.env.DSH_OPS_TEST_TS_RUNTIME; else process.env.DSH_OPS_TEST_TS_RUNTIME = oldTailscaleRuntime
     rmSync(home, { recursive: true, force: true })
   }
 }
