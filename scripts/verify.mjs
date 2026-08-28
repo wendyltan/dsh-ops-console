@@ -23,6 +23,10 @@ function resolveDshBin() {
   if (process.env.DSH_BIN && existsSync(process.env.DSH_BIN)) return process.env.DSH_BIN
   const found = spawnSync('which', ['dsh'], { encoding: 'utf8' })
   if (found.status === 0 && found.stdout.trim()) return found.stdout.trim()
+  try {
+    const engine = JSON.parse(readFileSync(join(process.env.DSH_HOME ?? join(HOME, '.dsh'), 'guardian', 'engine.json'), 'utf8'))
+    if (typeof engine?.active === 'string' && existsSync(engine.active)) return engine.active
+  } catch {}
   const root = join(HOME, '.npm', '_npx')
   let newest = null
   try {
@@ -46,8 +50,11 @@ function gate1() {
     const guardian = pkg?.dsh?.guardian
     if (guardian?.healthPath === '/dsh-ops/status' && Number(guardian?.protocolVersion) >= 1) ok('manifest declares a passive Guardian health contract')
     else bad('manifest must declare dsh.guardian.healthPath = /dsh-ops/status (protocolVersion >= 1)')
-    if (pkg.version === '0.6.1' && pkg.publishConfig?.access === 'public' && pkg.publishConfig?.registry === 'https://registry.npmjs.org/') ok('manifest is ready for a public npm release')
-    else bad('manifest must declare the 0.6.1 public npm release contract')
+    if (pkg.version === '0.6.2' && pkg.publishConfig?.access === 'public' && pkg.publishConfig?.registry === 'https://registry.npmjs.org/') ok('manifest is ready for a future public npm release')
+    else bad('manifest must declare the 0.6.2 public npm release contract')
+    const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
+    if (readme.includes('目前 npm 版本尚未发布') && readme.includes('github:wendyltan/dsh-ops-console')) ok('README leads with the currently usable GitHub installation path')
+    else bad('README must not present the deferred npm package as currently available')
   } catch (error) { bad('package.json invalid: ' + error.message) }
 }
 
@@ -61,7 +68,7 @@ function gate2() {
     new Function('window', 'require', 'console', src)(windowStub, () => {}, console)
     if (captured?.name === 'dsh-ops-console' && typeof captured.apply === 'function') ok('client factory exports an installable settings section')
     else bad('client factory did not export name/apply')
-    for (const text of ['取消配对码', '复制地址', '状态自动更新', '访问地址已保存，但尚未生效', '授权至']) {
+    for (const text of ['取消确认码', '复制地址', '每 15 秒自动更新', '访问地址已保存，但尚未生效', '远程入口已开启', 'Tailscale ACL 仍是实际访问权限来源', 'auth.data?.local === true', 'color-mix', 'min-height: 42px']) {
       if (src.includes(text)) ok('client includes interaction: ' + text)
       else bad('client is missing interaction: ' + text)
     }
@@ -203,6 +210,10 @@ if (args[0] === 'status' && args[1] === '--json') {
     const checkedIn = JSON.parse((await invoke(handlers.get('/dsh-ops/remote/checkin'), { method: 'POST', url: '/dsh-ops/remote/checkin', headers: sessionHeaders })).output)
     if (checkedIn.ok && checkedIn.verifiedAt) ok('paired remote browser records an actual verification check-in')
     else bad('remote verification check-in failed: ' + JSON.stringify(checkedIn))
+    const remoteDisable = await invoke(handlers.get('/dsh-ops/tailscale/disable'), { method: 'POST', url: '/dsh-ops/tailscale/disable', headers: sessionHeaders })
+    const remoteTrust = await invoke(add, { method: 'POST', url: '/dsh-ops/trust/add', headers: sessionHeaders, body: JSON.stringify({ host: 'remote-change.example.ts.net' }) })
+    if (remoteDisable.status === 403 && remoteTrust.status === 403 && JSON.parse(remoteDisable.output).localRequired === true) ok('paired remote devices cannot manage the Mac remote-access configuration')
+    else bad('remote session unexpectedly retained local management privileges')
     const sessionList = JSON.parse((await invoke(handlers.get('/dsh-ops/sessions'), { url: '/dsh-ops/sessions', headers: authHeaders })).output)
     if (sessionList.sessions?.length === 1 && sessionList.sessions[0].label === 'Test phone' && sessionList.sessions[0].expiresAt) ok('local page lists paired sessions with expiry and without token hashes')
     else bad('paired session listing failed: ' + JSON.stringify(sessionList))
