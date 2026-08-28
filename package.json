@@ -1,6 +1,6 @@
 {
   "name": "dsh-ops-console",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "DeepSeek Harness 的远程访问控制台：安全管理 Tailscale 入口、远程设备配对与 Harness 接受的访问地址。",
   "type": "module",
   "main": "lib/index.js",
@@ -10,6 +10,17 @@
     "url": "git+https://github.com/wendyltan/dsh-ops-console.git"
   },
   "homepage": "https://github.com/wendyltan/dsh-ops-console#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node scripts/verify.mjs",
+    "prepublishOnly": "node scripts/verify.mjs"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "keywords": [
     "deepseek",
     "harness",
