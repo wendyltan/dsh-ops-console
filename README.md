@@ -19,7 +19,11 @@ dsh-ops 不安装、更新、重启或恢复 dsh 引擎，也不提供余额、�
 
 前置条件：已安装 DeepSeek Harness、Node.js 18 或更高版本，并已安装和登录 Tailscale。
 
-目前 npm 版本尚未发布，请先从 GitHub 安装：
+推荐从 npm 安装：
+
+    dsh plugin --profile web add dsh-ops-console
+
+也可以直接从 GitHub 安装：
 
     dsh plugin --profile web add github:wendyltan/dsh-ops-console
 
@@ -94,7 +98,7 @@ dsh-ops 不安装、更新、重启或恢复 dsh 引擎，也不提供余额、�
 
     node scripts/deploy.mjs
 
-发布 npm 前可使用 `npm pack --dry-run` 检查实际入包文件。仓库已经准备 GitHub Trusted Publishing 工作流，但在 npm 包首次创建前不会发布。
+发布 npm 前可使用 `npm pack --dry-run` 检查实际入包文件。仓库已经准备 GitHub Trusted Publishing 工作流，首次发布完成后可用于后续版本的自动发布。
 
 ## 许可
 

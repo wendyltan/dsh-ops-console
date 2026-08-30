@@ -50,11 +50,11 @@ function gate1() {
     const guardian = pkg?.dsh?.guardian
     if (guardian?.healthPath === '/dsh-ops/status' && Number(guardian?.protocolVersion) >= 1) ok('manifest declares a passive Guardian health contract')
     else bad('manifest must declare dsh.guardian.healthPath = /dsh-ops/status (protocolVersion >= 1)')
-    if (pkg.version === '0.6.2' && pkg.publishConfig?.access === 'public' && pkg.publishConfig?.registry === 'https://registry.npmjs.org/') ok('manifest is ready for a future public npm release')
+    if (pkg.version === '0.6.2' && pkg.publishConfig?.access === 'public' && pkg.publishConfig?.registry === 'https://registry.npmjs.org/') ok('manifest is ready for the public npm release')
     else bad('manifest must declare the 0.6.2 public npm release contract')
     const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
-    if (readme.includes('目前 npm 版本尚未发布') && readme.includes('github:wendyltan/dsh-ops-console')) ok('README leads with the currently usable GitHub installation path')
-    else bad('README must not present the deferred npm package as currently available')
+    if (readme.includes('dsh plugin --profile web add dsh-ops-console') && readme.includes('github:wendyltan/dsh-ops-console') && !readme.includes('目前 npm 版本尚未发布')) ok('README presents npm as the primary install path and GitHub as an alternative')
+    else bad('README must present npm as the primary install path without deferred-release wording')
   } catch (error) { bad('package.json invalid: ' + error.message) }
 }
 
