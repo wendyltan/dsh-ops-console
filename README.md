@@ -2,6 +2,8 @@
 
 > DeepSeek Harness 的可选远程访问插件：通过 Tailscale 安全准备访问入口，并从 Mac 本机确认远程设备是否真正连通。
 
+公开发布版本：[npm 上的 dsh-ops-console](https://www.npmjs.com/package/dsh-ops-console)
+
 ## 它能做什么
 
 当你想从手机或另一台电脑打开 DeepSeek Harness 时，dsh-ops 把远程入口整理成几个清楚的动作：
@@ -17,7 +19,7 @@ dsh-ops 不安装、更新、重启或恢复 dsh 引擎，也不提供余额、�
 
 ### 1. 安装插件
 
-前置条件：已安装 DeepSeek Harness、Node.js 18 或更高版本，并已安装和登录 Tailscale。
+前置条件：已安装并配置可以正常使用的 dsh Web profile、Node.js 18 或更高版本，并已安装和登录 Tailscale。
 
 推荐从 npm 安装：
 
@@ -94,11 +96,11 @@ dsh-ops 不安装、更新、重启或恢复 dsh 引擎，也不提供余额、�
 
     npm test
 
-验证包括语法、权限边界、路由契约、客户端交互文本和一次临时 dsh web 启动。验证通过后可部署到本机：
+验证包括语法、权限边界、路由契约、客户端交互文本和一次临时 dsh web 启动。仓库维护者或本机开发者验证通过后，可部署到受 Guardian 管理的本机开发环境：
 
     node scripts/deploy.mjs
 
-发布 npm 前可使用 `npm pack --dry-run` 检查实际入包文件。仓库已经准备 GitHub Trusted Publishing 工作流，首次发布完成后可用于后续版本的自动发布。
+发布新版本前可使用 `npm pack --dry-run` 检查实际入包文件。仓库提供 GitHub Trusted Publishing 工作流；在 npm 包设置中将该仓库和 workflow 配置为可信发布者后，才可用于后续版本的自动发布。普通用户无需运行部署脚本，直接从 npm 安装即可。
 
 ## 许可
 
