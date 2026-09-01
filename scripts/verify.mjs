@@ -57,6 +57,9 @@ function gate1() {
     const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
     if (readme.includes('dsh plugin --profile web add dsh-ops-console') && readme.includes('github:wendyltan/dsh-ops-console') && !readme.includes('目前 npm 版本尚未发布')) ok('README presents npm as the primary install path and GitHub as an alternative')
     else bad('README must present npm as the primary install path without deferred-release wording')
+    const deploySource = readFileSync(join(ROOT, 'scripts', 'deploy.mjs'), 'utf8')
+    if (deploySource.includes("Object.keys(manifest.dependencies ?? {})") && deploySource.includes('candidate cannot load independently')) ok('local deployment carries and independently loads runtime dependencies')
+    else bad('local deployment does not verify its runtime dependencies')
   } catch (error) { bad('package.json invalid: ' + error.message) }
 }
 

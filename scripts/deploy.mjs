@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process'
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const DSH_HOME = process.env.DSH_HOME ?? join(homedir(), '.dsh')
@@ -48,6 +48,35 @@ const candidate = join(DEPLOY_ROOT, `.candidate-${stamp}`)
 rmSync(candidate, { recursive: true, force: true })
 mkdirSync(candidate, { recursive: true })
 for (const item of ITEMS) cpSync(join(ROOT, item), join(candidate, item), { recursive: true })
+
+// A linked deployment is not installed by a package manager, so copy the
+// package's declared runtime dependencies into the immutable candidate too.
+// This keeps the deployment self-contained while npm users still receive
+// dependencies through the normal installation flow.
+const manifest = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+for (const name of Object.keys(manifest.dependencies ?? {})) {
+  const parts = name.split('/')
+  const source = join(ROOT, 'node_modules', ...parts)
+  const destination = join(candidate, 'node_modules', ...parts)
+  if (!existsSync(source)) {
+    rmSync(candidate, { recursive: true, force: true })
+    console.error(`deploy aborted: runtime dependency is not installed: ${name}`)
+    process.exit(1)
+  }
+  mkdirSync(dirname(destination), { recursive: true })
+  cpSync(source, destination, { recursive: true })
+}
+
+const candidateImport = spawnSync(process.execPath, [
+  '--input-type=module',
+  '--eval',
+  `import(${JSON.stringify(pathToFileURL(join(candidate, 'lib', 'index.js')).href)})`,
+], { encoding: 'utf8' })
+if (candidateImport.status !== 0) {
+  rmSync(candidate, { recursive: true, force: true })
+  console.error(`deploy aborted: candidate cannot load independently:\n${candidateImport.stderr || candidateImport.stdout}`)
+  process.exit(1)
+}
 
 let backup = null
 if (existsSync(CURRENT)) {
