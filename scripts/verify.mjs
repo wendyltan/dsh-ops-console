@@ -52,6 +52,8 @@ function gate1() {
     else bad('manifest must declare dsh.guardian.healthPath = /dsh-ops/status (protocolVersion >= 1)')
     if (pkg.version === '0.6.2' && pkg.publishConfig?.access === 'public' && pkg.publishConfig?.registry === 'https://registry.npmjs.org/') ok('manifest is ready for the public npm release')
     else bad('manifest must declare the 0.6.2 public npm release contract')
+    if (pkg.dependencies?.['qrcode-generator'] === '2.0.4') ok('manifest pins the dependency-free local QR encoder')
+    else bad('manifest must pin qrcode-generator 2.0.4')
     const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
     if (readme.includes('dsh plugin --profile web add dsh-ops-console') && readme.includes('github:wendyltan/dsh-ops-console') && !readme.includes('目前 npm 版本尚未发布')) ok('README presents npm as the primary install path and GitHub as an alternative')
     else bad('README must present npm as the primary install path without deferred-release wording')
@@ -68,7 +70,7 @@ function gate2() {
     new Function('window', 'require', 'console', src)(windowStub, () => {}, console)
     if (captured?.name === 'dsh-ops-console' && typeof captured.apply === 'function') ok('client factory exports an installable settings section')
     else bad('client factory did not export name/apply')
-    for (const text of ['取消确认码', '复制地址', '复制连接说明', '记录保留', '立即收紧访问', '每 15 秒自动更新', '访问地址已保存，但尚未生效', '远程入口已开启', 'Tailscale ACL 仍是实际访问权限来源', 'auth.data?.local === true', 'color-mix', 'min-height: 42px']) {
+    for (const text of ['取消确认码', '复制地址', '复制连接说明', '扫描二维码', '二维码只包含访问地址', '记录保留', '立即收紧访问', '每 15 秒自动更新', '访问地址已保存，但尚未生效', '远程入口已开启', 'Tailscale ACL 仍是实际访问权限来源', 'auth.data?.local === true', 'color-mix', 'min-height: 42px']) {
       if (src.includes(text)) ok('client includes interaction: ' + text)
       else bad('client is missing interaction: ' + text)
     }
@@ -103,7 +105,7 @@ async function gate3() {
   process.env.DSH_HOME = home
   process.env.DSH_OPS_ADMIN_TOKEN = 'v'.repeat(48)
   mkdirSync(join(home, 'profiles', 'web'), { recursive: true })
-  writeFileSync(join(home, 'profiles', 'web', 'cordis.patch.yml'), '[]\n')
+  writeFileSync(join(home, 'profiles', 'web', 'cordis.patch.yml'), '- id: connection\n  config:\n    trustedHosts:\n      - dsh-host.example.ts.net\n')
   const tailscaleState = join(home, 'tailscale-serve.json')
   const tailscaleLog = join(home, 'tailscale.log')
   const tailscaleRuntime = join(home, 'tailscale-runtime.json')
@@ -187,6 +189,9 @@ if (args[0] === 'status' && args[1] === '--json') {
     const createdData = JSON.parse(created.output)
     if (created.status === 200 && /^\d{6}$/.test(createdData.code)) ok('local page creates a six-digit expiring pairing code')
     else bad('pairing code creation failed: ' + created.output)
+    const qrSvg = createdData.invitation?.qrSvg ?? ''
+    if (createdData.invitation?.url === 'https://dsh-host.example.ts.net/' && qrSvg.startsWith('<svg') && qrSvg.includes('<path') && !qrSvg.includes(createdData.code)) ok('pairing includes a local SVG QR for the address without embedding the pairing code')
+    else bad('local QR invitation failed: ' + JSON.stringify(createdData.invitation))
     const cancelled = await invoke(handlers.get('/dsh-ops/pairing/cancel'), { method: 'POST', url: '/dsh-ops/pairing/cancel', headers: authHeaders })
     const cancelledData = JSON.parse(cancelled.output)
     const cancelledRedeem = await invoke(handlers.get('/dsh-ops/pairing/redeem'), {

@@ -13,6 +13,9 @@
   "engines": {
     "node": ">=18"
   },
+  "dependencies": {
+    "qrcode-generator": "2.0.4"
+  },
   "scripts": {
     "test": "node scripts/verify.mjs",
     "prepublishOnly": "node scripts/verify.mjs"
