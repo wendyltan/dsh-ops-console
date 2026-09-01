@@ -1,63 +1,67 @@
 # dsh-ops-console
 
-> DeepSeek Harness 的可选远程访问插件：通过 Tailscale 安全准备访问入口，并从 Mac 本机确认远程设备是否真正连通。
+> Mac 留在桌边，手机或另一台电脑也能安全打开 DeepSeek Harness。
 
-公开发布版本：[npm 上的 dsh-ops-console](https://www.npmjs.com/package/dsh-ops-console)
+dsh-ops-console 是一个可选的 dsh Web 插件。它帮你准备 Tailscale 远程入口、看懂当前是否就绪，并用一次性确认码验证另一台设备确实连了进来。
 
-## 它能做什么
+[在 npm 查看 dsh-ops-console](https://www.npmjs.com/package/dsh-ops-console)
 
-当你想从手机或另一台电脑打开 DeepSeek Harness 时，dsh-ops 把远程入口整理成几个清楚的动作：
+## 它解决什么问题
 
-1. **准备远程入口**：只管理 Harness 自己的 Tailscale Serve，不覆盖其他服务。
-2. **显示真实状态**：分别显示 Tailscale、远程入口和访问地址是否就绪。
-3. **确认远程连接**：Mac 生成一次性六位确认码，另一台设备输入后留下可识别的连接记录。
-4. **安全修改地址**：可信地址只允许在 Mac 本机增删，保存后明确提示是否需要重新打开 Harness。
+远程打开 Harness，真正麻烦的往往不是得到一个网址，而是回答下面几件事：Tailscale 到底有没有连上？这个地址是否已经被 Harness 接受？手机打开的真是这台 Mac 吗？关掉入口会不会误伤其他服务？
 
-dsh-ops 不安装、更新、重启或恢复 dsh 引擎，也不提供余额、日志或故障诊断。这些本机能力由 [dsh-desktop](https://github.com/wendyltan/dsh-desktop) 负责。
+dsh-ops 把这些判断整理成一个页面和几个明确动作：
+
+- **准备入口**：只为 Harness 创建 Tailscale Serve，不覆盖同一台 Mac 上的其他服务。
+- **看懂状态**：分别显示 Tailscale、远程入口和访问地址是否就绪，并给出下一步。
+- **确认设备**：Mac 生成一次性六位确认码，手机或另一台电脑输入后留下可识别的连接记录。
+- **守住本机权限**：开启入口、修改地址和清除设备记录，只能在 Mac 本机完成。
+
+dsh-ops 有意不做引擎管理：它不会安装、更新、重启或恢复 Harness，也不读取余额、日志、API Key、提示词或会话正文。这些本机能力由 [dsh-desktop](https://github.com/wendyltan/dsh-desktop) 负责。
 
 ## 3 分钟开始使用
 
-### 1. 安装插件
+开始前，请确认这台 Mac 已经有可正常使用的 dsh Web profile、Node.js 18 或更高版本，并已安装和登录 Tailscale。
 
-前置条件：已安装并配置可以正常使用的 dsh Web profile、Node.js 18 或更高版本，并已安装和登录 Tailscale。
+### 1. 安装插件
 
 推荐从 npm 安装：
 
-    dsh plugin --profile web add dsh-ops-console
+```bash
+dsh plugin --profile web add dsh-ops-console
+```
 
-也可以直接从 GitHub 安装：
+也可以安装 GitHub 版本：
 
-    dsh plugin --profile web add github:wendyltan/dsh-ops-console
+```bash
+dsh plugin --profile web add github:wendyltan/dsh-ops-console
+```
 
-也可以安装本地源码目录：
+本地开发时，也可以直接安装源码目录：
 
-    dsh plugin --profile web add /path/to/dsh-ops-console
+```bash
+dsh plugin --profile web add /path/to/dsh-ops-console
+```
 
-安装后重新打开 dsh web，然后进入 **设置 → 远程访问**。
+安装后重新打开 dsh Web，进入“设置 → 远程访问”。
 
-### 2. 设置远程访问
+### 2. 在 Mac 上准备远程入口
 
-在 Mac 本机点击“设置远程访问”。dsh-ops 会：
+点击“设置远程访问”。dsh-ops 会为 Harness 创建 Tailscale Serve 入口，并把当前 tailnet 域名加入 Harness 接受的访问地址。
 
-- 创建指向 Harness 的 Tailscale Serve 入口；
-- 把本机 tailnet 域名加入 Harness 接受的访问地址；
-- 遇到 HTTPS 根地址冲突时停止操作，不覆盖已有服务。
-
-如果页面提示“地址等待生效”，请重新打开 Harness。dsh-ops 会在下一次加载时自动确认地址是否已经生效。
+如果 HTTPS 根地址已经被其他服务使用，操作会停止并说明冲突，不会直接覆盖。页面提示“地址等待生效”时，重新打开 Harness 即可；下次加载后，dsh-ops 会再次确认地址是否已经生效。
 
 ### 3. 在另一台设备打开
 
-复制页面显示的 HTTPS 地址，在已登录同一 Tailnet 的手机或电脑上打开。Tailscale ACL 决定哪些用户和设备可以访问；dsh-ops 不会绕过或替代 Tailscale 权限。
+复制页面上的 HTTPS 地址，在已经登录同一 Tailnet 的手机或电脑上打开。实际哪些用户和设备可以访问，由 Tailscale ACL 决定；dsh-ops 不会绕过或替代这层权限。
 
-### 4. 确认远程设备
+### 4. 用确认码留下真实连接记录
 
-1. 在 Mac 本机生成一次性确认码。
-2. 在另一台设备输入设备名称和六位确认码。
-3. Mac 会显示该设备最近一次确认时间和记录保留期限。
+在 Mac 本机生成确认码，再到远程设备上输入设备名称和六位数字。确认成功后，Mac 会显示这台设备最近一次确认时间和记录保留期限。
 
-确认码只可使用一次，5 分钟后失效。忘记确认记录不会修改 Tailscale ACL，也不会代替在 Tailscale 中撤销设备权限。
+确认码只能使用一次，5 分钟后失效。它的作用是证明“这台远程设备确实打开过当前地址”，不是给设备授予 Tailnet 权限。忘记一条确认记录，也不会代替你在 Tailscale 中撤销设备。
 
-## 权限与产品边界
+## 谁能做什么
 
 | 能力 | Mac 本机 | 已确认的远程设备 |
 | --- | --- | --- |
@@ -68,39 +72,44 @@ dsh-ops 不安装、更新、重启或恢复 dsh 引擎，也不提供余额、�
 | 查看或清除设备确认记录 | 可以 | 不可以 |
 | 更新、重启、恢复引擎 | 不属于 dsh-ops | 不属于 dsh-ops |
 
-关闭远程访问只移除 Harness 自己的 Serve 入口，不执行全局 `tailscale serve reset`，也不会删除其他 Tailscale Serve 配置。
+关闭远程访问时，dsh-ops 只移除 Harness 自己的 Serve 入口，不执行全局 `tailscale serve reset`，因此不会删除其他 Tailscale Serve 配置。
 
-## 常见状态
+## 页面上的状态是什么意思
 
-| 页面状态 | 含义 | 下一步 |
+| 页面状态 | 发生了什么 | 你可以怎么做 |
 | --- | --- | --- |
 | Tailscale 未连接 | 应用未运行、未登录或当前离线 | 在 Mac 上打开并登录 Tailscale |
-| 入口未创建 | 尚未为 Harness 配置 Serve | 在 Mac 本机点击“设置远程访问” |
-| 地址等待生效 | 配置已保存，但 Harness 仍在使用启动时配置 | 重新打开 Harness |
-| 远程入口已开启 | 本机三项配置已经就绪 | 在另一台设备打开地址并完成确认 |
+| 入口未创建 | 还没有为 Harness 配置 Serve | 在 Mac 本机点击“设置远程访问” |
+| 地址等待生效 | 配置已保存，Harness 仍在使用启动时的地址 | 重新打开 Harness |
+| 远程入口已开启 | Mac 端的三项配置已经就绪 | 到另一台设备打开地址并完成确认 |
 
-“确认远程可用”会从 Mac 本机访问远程 HTTPS 地址。它证明本机配置已经完成，但最终仍应在另一台设备上实际打开一次。
+“确认远程可用”会从 Mac 本机访问远程 HTTPS 地址。它可以证明本机端配置完成，但不能代替你在手机或另一台电脑上的真实打开测试。
 
-## 隐私与安全设计
+## 安全和隐私
 
-- 所有入口和可信地址写入操作同时要求同源请求、Mac 本机访问和本机管理令牌。
-- 远程确认使用独立、可忘记、最长保留 90 天的会话记录；服务端只保存令牌哈希。
-- 配对失败按 Tailscale 身份或请求来源分别限流，不会让一台输错设备阻止其他设备确认。
-- 不读取 API 密钥、提示词、会话正文、余额或日志。
+- 入口和可信地址的写入操作同时要求同源请求、Mac 本机访问和本机管理令牌。
+- 远程设备使用独立、可忘记的会话记录，最长保留 90 天；服务端只保存令牌哈希。
+- 配对失败会按 Tailscale 身份或请求来源分别限流，一台设备输错不会阻止其他设备确认。
 - 公共健康接口只返回插件可用性和版本，不公开 PID、端口、引擎版本或本机路径。
-- 可信地址写入前最多保留五份配置备份，并使用同步落盘和原子替换。
+- 可信地址写入前最多保留五份配置备份，并采用同步落盘和原子替换。
 
-## 开发与验证
+## 开发与发布
 
 运行完整验证：
 
-    npm test
+```bash
+npm test
+```
 
-验证包括语法、权限边界、路由契约、客户端交互文本和一次临时 dsh web 启动。仓库维护者或本机开发者验证通过后，可部署到受 Guardian 管理的本机开发环境：
+验证会覆盖语法、权限边界、路由契约、客户端交互文本，以及一次临时 dsh Web 启动。
 
-    node scripts/deploy.mjs
+仓库维护者或本机开发者验证通过后，可以部署到受保护的本机开发环境：
 
-发布新版本前可使用 `npm pack --dry-run` 检查实际入包文件。仓库提供 GitHub Trusted Publishing 工作流；在 npm 包设置中将该仓库和 workflow 配置为可信发布者后，才可用于后续版本的自动发布。普通用户无需运行部署脚本，直接从 npm 安装即可。
+```bash
+node scripts/deploy.mjs
+```
+
+普通用户不需要运行部署脚本，直接从 npm 安装即可。发布新版本前，可用 `npm pack --dry-run` 检查实际入包文件；仓库也提供 GitHub Trusted Publishing 工作流，需先在 npm 包设置中配置可信发布者。
 
 ## 许可
 
