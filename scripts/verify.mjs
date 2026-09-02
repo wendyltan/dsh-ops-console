@@ -50,8 +50,8 @@ function gate1() {
     const guardian = pkg?.dsh?.guardian
     if (guardian?.healthPath === '/dsh-ops/status' && Number(guardian?.protocolVersion) >= 1) ok('manifest declares a passive Guardian health contract')
     else bad('manifest must declare dsh.guardian.healthPath = /dsh-ops/status (protocolVersion >= 1)')
-    if (pkg.version === '0.6.2' && pkg.publishConfig?.access === 'public' && pkg.publishConfig?.registry === 'https://registry.npmjs.org/') ok('manifest is ready for the public npm release')
-    else bad('manifest must declare the 0.6.2 public npm release contract')
+    if (pkg.version === '0.7.0' && pkg.publishConfig?.access === 'public' && pkg.publishConfig?.registry === 'https://registry.npmjs.org/') ok('manifest is ready for the public npm release')
+    else bad('manifest must declare the 0.7.0 public npm release contract')
     if (pkg.dependencies?.['qrcode-generator'] === '2.0.4') ok('manifest pins the dependency-free local QR encoder')
     else bad('manifest must pin qrcode-generator 2.0.4')
     const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
@@ -73,9 +73,13 @@ function gate2() {
     new Function('window', 'require', 'console', src)(windowStub, () => {}, console)
     if (captured?.name === 'dsh-ops-console' && typeof captured.apply === 'function') ok('client factory exports an installable settings section')
     else bad('client factory did not export name/apply')
-    for (const text of ['取消确认码', '复制地址', '复制连接说明', '扫描二维码', '二维码只包含访问地址', '记录保留', '立即收紧访问', '每 15 秒自动更新', '访问地址已保存，但尚未生效', '远程入口已开启', 'Tailscale ACL 仍是实际访问权限来源', 'auth.data?.local === true', 'color-mix', 'min-height: 42px']) {
+    for (const text of ['复制地址', '二维码只包含这个 HTTPS 地址', '更多访问设置', '检测连接', '每 15 秒自动更新', '访问地址已保存，但尚未生效', '远程入口已开启', '哪些账号和设备能够访问，由 Tailscale 管理', '界面与服务版本不一致', 'auth.data?.local === true', 'color-mix', 'min-height: 42px']) {
       if (src.includes(text)) ok('client includes interaction: ' + text)
       else bad('client is missing interaction: ' + text)
+    }
+    for (const text of ['生成确认码', '复制连接说明', '发送连接说明', '设备记录保留', '忘记全部记录', '分享地址', '立即刷新']) {
+      if (!src.includes(text)) ok('client omits obsolete interaction: ' + text)
+      else bad('client still includes obsolete interaction: ' + text)
     }
   } catch (error) { bad('client bundle crashed: ' + error.message) }
 }
@@ -161,7 +165,7 @@ if (args[0] === 'status' && args[1] === '--json') {
       if (result.status === 200 && data.ok === true) ok(path + ' returns usable JSON')
       else bad(path + ' failed: ' + result.output.slice(0, 300))
     }
-    for (const path of ['/dsh-ops/pairing/create', '/dsh-ops/pairing/cancel', '/dsh-ops/pairing/redeem', '/dsh-ops/remote/checkin', '/dsh-ops/sessions', '/dsh-ops/sessions/revoke', '/dsh-ops/sessions/revoke-all', '/dsh-ops/auth/rotate-master', '/dsh-ops/security/tighten']) {
+    for (const path of ['/dsh-ops/tailscale/enable', '/dsh-ops/tailscale/disable', '/dsh-ops/trust/add', '/dsh-ops/trust/remove']) {
       if (handlers.has(path)) ok(path + ' route registered')
       else bad(path + ' route missing')
     }
@@ -171,7 +175,7 @@ if (args[0] === 'status' && args[1] === '--json') {
     const publicTrust = JSON.parse((await invoke(handlers.get('/dsh-ops/trust'), { url: '/dsh-ops/trust' })).output)
     if (!('patchFile' in publicTrust)) ok('trust response omits the local profile path')
     else bad('trust response leaks local path: ' + JSON.stringify(publicTrust))
-    const removed = ['/dsh-ops/summary', '/dsh-ops/diagnose', '/dsh-ops/timeline', '/dsh-ops/report', '/dsh-ops/balance', '/dsh-ops/settings', '/dsh-ops/settings/save', '/dsh-ops/logs']
+    const removed = ['/dsh-ops/summary', '/dsh-ops/diagnose', '/dsh-ops/timeline', '/dsh-ops/report', '/dsh-ops/balance', '/dsh-ops/settings', '/dsh-ops/settings/save', '/dsh-ops/logs', '/dsh-ops/pairing/create', '/dsh-ops/pairing/cancel', '/dsh-ops/pairing/redeem', '/dsh-ops/remote/checkin', '/dsh-ops/sessions', '/dsh-ops/sessions/revoke', '/dsh-ops/sessions/revoke-all', '/dsh-ops/auth/rotate-master', '/dsh-ops/security/tighten']
     for (const path of removed) {
       if (handlers.has(path)) bad(path + ' route should have been removed')
       else ok(path + ' is no longer registered')
@@ -188,58 +192,17 @@ if (args[0] === 'status' && args[1] === '--json') {
 
     const authHeaders = { origin: 'http://localhost', host: 'localhost', 'x-dsh-ops-token': 'v'.repeat(48) }
     const remoteHeaders = { origin: 'https://dsh-host.example.ts.net', host: 'dsh-host.example.ts.net' }
-    const created = await invoke(handlers.get('/dsh-ops/pairing/create'), { method: 'POST', url: '/dsh-ops/pairing/create', headers: authHeaders })
-    const createdData = JSON.parse(created.output)
-    if (created.status === 200 && /^\d{6}$/.test(createdData.code)) ok('local page creates a six-digit expiring pairing code')
-    else bad('pairing code creation failed: ' + created.output)
-    const qrSvg = createdData.invitation?.qrSvg ?? ''
-    if (createdData.invitation?.url === 'https://dsh-host.example.ts.net/' && qrSvg.startsWith('<svg') && qrSvg.includes('<path') && !qrSvg.includes(createdData.code)) ok('pairing includes a local SVG QR for the address without embedding the pairing code')
-    else bad('local QR invitation failed: ' + JSON.stringify(createdData.invitation))
-    const cancelled = await invoke(handlers.get('/dsh-ops/pairing/cancel'), { method: 'POST', url: '/dsh-ops/pairing/cancel', headers: authHeaders })
-    const cancelledData = JSON.parse(cancelled.output)
-    const cancelledRedeem = await invoke(handlers.get('/dsh-ops/pairing/redeem'), {
-      method: 'POST', url: '/dsh-ops/pairing/redeem', headers: { ...remoteHeaders, 'x-forwarded-for': '100.64.0.10' },
-      body: JSON.stringify({ code: createdData.code, label: 'Cancelled phone' }),
-    })
-    if (cancelledData.ok && cancelledData.removed === 1 && cancelledRedeem.status === 401) ok('local page can cancel the current pairing code')
-    else bad('pairing cancellation failed')
-    const replacement = JSON.parse((await invoke(handlers.get('/dsh-ops/pairing/create'), {
-      method: 'POST', url: '/dsh-ops/pairing/create', headers: authHeaders, body: JSON.stringify({ sessionDays: 7 }),
-    })).output)
-    const redeemed = await invoke(handlers.get('/dsh-ops/pairing/redeem'), {
-      method: 'POST', url: '/dsh-ops/pairing/redeem', headers: remoteHeaders,
-      body: JSON.stringify({ code: replacement.code, label: 'Test phone' }),
-    })
-    const redeemedData = JSON.parse(redeemed.output)
-    const retainedMs = Date.parse(redeemedData.session?.expiresAt ?? '') - Date.parse(redeemedData.session?.createdAt ?? '')
-    if (redeemed.status === 200 && redeemedData.ok && typeof redeemedData.token === 'string' && replacement.sessionDays === 7 && retainedMs === 7 * 24 * 60 * 60 * 1000) ok('remote browser redeems pairing code with the selected fixed retention')
-    else bad('pairing redemption failed: ' + redeemed.output)
-    const sessionHeaders = { ...remoteHeaders, 'x-dsh-ops-token': redeemedData.token }
-    const remoteAuth = JSON.parse((await invoke(handlers.get('/dsh-ops/auth'), { url: '/dsh-ops/auth', headers: sessionHeaders })).output)
-    if (remoteAuth.paired === true && remoteAuth.token === undefined) ok('remote auth recognizes the session without disclosing the master token')
-    else bad('remote session auth failed: ' + JSON.stringify(remoteAuth))
-    const checkedIn = JSON.parse((await invoke(handlers.get('/dsh-ops/remote/checkin'), { method: 'POST', url: '/dsh-ops/remote/checkin', headers: sessionHeaders })).output)
-    if (checkedIn.ok && checkedIn.verifiedAt) ok('paired remote browser records an actual verification check-in')
-    else bad('remote verification check-in failed: ' + JSON.stringify(checkedIn))
-    const remoteDisable = await invoke(handlers.get('/dsh-ops/tailscale/disable'), { method: 'POST', url: '/dsh-ops/tailscale/disable', headers: sessionHeaders })
-    const remoteTrust = await invoke(add, { method: 'POST', url: '/dsh-ops/trust/add', headers: sessionHeaders, body: JSON.stringify({ host: 'remote-change.example.ts.net' }) })
-    const remoteTighten = await invoke(handlers.get('/dsh-ops/security/tighten'), { method: 'POST', url: '/dsh-ops/security/tighten', headers: sessionHeaders, body: JSON.stringify({ confirm: 'tighten-remote-access' }) })
-    if (remoteDisable.status === 403 && remoteTrust.status === 403 && remoteTighten.status === 403 && JSON.parse(remoteDisable.output).localRequired === true) ok('paired remote devices cannot manage or tighten the Mac remote-access configuration')
-    else bad('remote session unexpectedly retained local management privileges')
-    const sessionList = JSON.parse((await invoke(handlers.get('/dsh-ops/sessions'), { url: '/dsh-ops/sessions', headers: authHeaders })).output)
-    if (sessionList.sessions?.length === 1 && sessionList.sessions[0].label === 'Test phone' && sessionList.sessions[0].expiresAt) ok('local page lists paired sessions with expiry and without token hashes')
-    else bad('paired session listing failed: ' + JSON.stringify(sessionList))
-    if (!JSON.stringify(sessionList).includes('tokenHash')) ok('session listing never exposes token hashes')
-    else bad('session listing leaked a token hash')
-    const authStateFile = join(home, 'ops-console', 'auth-state.json')
-    const legacyState = JSON.parse(readFileSync(authStateFile, 'utf8'))
-    legacyState.version = 1
-    for (const session of legacyState.sessions) delete session.expiresAt
-    writeFileSync(authStateFile, JSON.stringify(legacyState))
-    const legacyAuth = JSON.parse((await invoke(handlers.get('/dsh-ops/auth'), { url: '/dsh-ops/auth', headers: sessionHeaders })).output)
-    const legacyRetention = Date.parse(legacyAuth.session?.expiresAt ?? '') - Date.parse(legacyAuth.session?.lastSeenAt ?? '')
-    if (legacyAuth.paired === true && legacyRetention === 90 * 24 * 60 * 60 * 1000) ok('existing 0.6.x sessions migrate without unexpected sign-out')
-    else bad('legacy session compatibility failed: ' + JSON.stringify(legacyAuth))
+    const readyAccess = JSON.parse((await invoke(handlers.get('/dsh-ops/tailscale'), { url: '/dsh-ops/tailscale' })).output)
+    const qrSvg = readyAccess.invitation?.qrSvg ?? ''
+    if (readyAccess.invitation?.url === 'https://dsh-host.example.ts.net/' && qrSvg.startsWith('<svg') && qrSvg.includes('<path')) ok('ready remote access includes a permanent local SVG QR')
+    else bad('permanent local QR failed: ' + JSON.stringify(readyAccess.invitation))
+    const remoteAuth = JSON.parse((await invoke(handlers.get('/dsh-ops/auth'), { url: '/dsh-ops/auth', headers: remoteHeaders })).output)
+    if (remoteAuth.local === false && remoteAuth.token === undefined && remoteAuth.contractVersion === 2) ok('remote page learns the UI contract without receiving local management credentials')
+    else bad('remote auth boundary failed: ' + JSON.stringify(remoteAuth))
+    const remoteDisable = await invoke(handlers.get('/dsh-ops/tailscale/disable'), { method: 'POST', url: '/dsh-ops/tailscale/disable', headers: remoteHeaders })
+    const remoteTrust = await invoke(add, { method: 'POST', url: '/dsh-ops/trust/add', headers: remoteHeaders, body: JSON.stringify({ host: 'remote-change.example.ts.net' }) })
+    if (remoteDisable.status === 403 && remoteTrust.status === 403 && JSON.parse(remoteDisable.output).localRequired === true) ok('remote devices cannot manage the Mac remote-access configuration')
+    else bad('remote device unexpectedly retained local management privileges')
 
     const validAdd = await invoke(add, { method: 'POST', url: '/dsh-ops/trust/add', headers: authHeaders, body: JSON.stringify({ host: 'extra.example.ts.net' }) })
     const backupDir = join(home, 'ops-console', 'config-backups')
@@ -249,6 +212,9 @@ if (args[0] === 'status' && args[1] === '--json') {
     const pendingTrust = JSON.parse((await invoke(handlers.get('/dsh-ops/trust'), { url: '/dsh-ops/trust' })).output)
     if (pendingTrust.pendingRestart === true && Array.isArray(pendingTrust.activeHosts)) ok('trust route distinguishes saved configuration from the boot-time active configuration')
     else bad('pending trusted-host state was not reported')
+    const pendingAccess = JSON.parse((await invoke(handlers.get('/dsh-ops/tailscale'), { url: '/dsh-ops/tailscale' })).output)
+    if (pendingAccess.invitation === null) ok('QR stays hidden while the trusted address is waiting for restart')
+    else bad('QR appeared before the trusted address became active')
 
     const disable = handlers.get('/dsh-ops/tailscale/disable')
     const disabled = await invoke(disable, { method: 'POST', url: '/dsh-ops/tailscale/disable', headers: authHeaders })
@@ -279,51 +245,12 @@ if (args[0] === 'status' && args[1] === '--json') {
     if (stoppedAccess.tailscaleRunning === false && stoppedAccess.serveActive === true && stoppedCheck.verdict === 'tailscale-stopped') ok('stopped Tailscale is distinct from a missing Serve configuration')
     else bad('stopped Tailscale state was misreported: ' + JSON.stringify({ stoppedAccess, stoppedCheck }))
 
-    const revoked = JSON.parse((await invoke(handlers.get('/dsh-ops/sessions/revoke'), {
-      method: 'POST', url: '/dsh-ops/sessions/revoke', headers: authHeaders, body: JSON.stringify({ id: redeemedData.session.id }),
-    })).output)
-    const afterRevoke = JSON.parse((await invoke(handlers.get('/dsh-ops/auth'), { url: '/dsh-ops/auth', headers: sessionHeaders })).output)
-    if (revoked.ok && revoked.removed === 1 && afterRevoke.paired === false) ok('local page can revoke one remote session immediately')
-    else bad('remote session revocation failed')
-
-    const isolatedCode = JSON.parse((await invoke(handlers.get('/dsh-ops/pairing/create'), { method: 'POST', url: '/dsh-ops/pairing/create', headers: authHeaders })).output)
-    for (let i = 0; i < 8; i++) {
-      await invoke(handlers.get('/dsh-ops/pairing/redeem'), {
-        method: 'POST', url: '/dsh-ops/pairing/redeem', headers: { ...remoteHeaders, 'x-forwarded-for': '100.64.0.20' },
-        body: JSON.stringify({ code: '000000', label: 'Noisy device' }),
-      })
-    }
-    const noisyBlocked = await invoke(handlers.get('/dsh-ops/pairing/redeem'), {
-      method: 'POST', url: '/dsh-ops/pairing/redeem', headers: { ...remoteHeaders, 'x-forwarded-for': '100.64.0.20' },
-      body: JSON.stringify({ code: isolatedCode.code, label: 'Noisy device' }),
-    })
-    const otherSource = await invoke(handlers.get('/dsh-ops/pairing/redeem'), {
-      method: 'POST', url: '/dsh-ops/pairing/redeem', headers: { ...remoteHeaders, 'x-forwarded-for': '100.64.0.21' },
-      body: JSON.stringify({ code: isolatedCode.code, label: 'Other phone' }),
-    })
-    if (noisyBlocked.status === 429 && otherSource.status === 200) ok('pairing rate limits one source without blocking other devices')
-    else bad('pairing rate limit was not isolated by source')
-
     writeFileSync(tailscaleRuntime, JSON.stringify({ BackendState: 'Running', Health: [], Self: { DNSName: 'dsh-host.example.ts.net.', Online: true } }))
     writeFileSync(tailscaleState, JSON.stringify({ Web: {
       'dsh-host.example.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:3080' } } },
       'other-service.example.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:9999' } } },
     } }))
     await new Promise((resolve) => setTimeout(resolve, 4100))
-    const pending = JSON.parse((await invoke(handlers.get('/dsh-ops/pairing/create'), { method: 'POST', url: '/dsh-ops/pairing/create', headers: authHeaders })).output)
-    const missingConfirmation = await invoke(handlers.get('/dsh-ops/security/tighten'), { method: 'POST', url: '/dsh-ops/security/tighten', headers: authHeaders, body: '{}' })
-    const tightened = await invoke(handlers.get('/dsh-ops/security/tighten'), {
-      method: 'POST', url: '/dsh-ops/security/tighten', headers: authHeaders, body: JSON.stringify({ confirm: 'tighten-remote-access' }),
-    })
-    const tightenedData = JSON.parse(tightened.output)
-    const afterTightenSessions = JSON.parse((await invoke(handlers.get('/dsh-ops/sessions'), { url: '/dsh-ops/sessions', headers: authHeaders })).output)
-    const pendingRedeem = await invoke(handlers.get('/dsh-ops/pairing/redeem'), {
-      method: 'POST', url: '/dsh-ops/pairing/redeem', headers: { ...remoteHeaders, 'x-forwarded-for': '100.64.0.30' }, body: JSON.stringify({ code: pending.code, label: 'Late phone' }),
-    })
-    const tightenedServe = readFileSync(tailscaleState, 'utf8')
-    if (missingConfirmation.status === 400 && tightened.status === 200 && tightenedData.ok && tightenedData.entranceClosed && tightenedData.removedSessions >= 1 && afterTightenSessions.sessions.length === 0 && pendingRedeem.status === 401 && !tightenedServe.includes('3080') && tightenedServe.includes('9999')) {
-      ok('explicit local tighten closes only Harness, cancels pairing, and revokes every remote session')
-    } else bad('tighten access contract failed: ' + JSON.stringify({ missingConfirmation: missingConfirmation.output, tightened: tightened.output, afterTightenSessions, pendingRedeem: pendingRedeem.output, tightenedServe }))
   } catch (error) { bad('route contract crashed: ' + (error.stack || error)) }
   finally {
     if (oldHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = oldHome
