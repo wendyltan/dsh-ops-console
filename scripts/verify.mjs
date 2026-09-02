@@ -4,7 +4,7 @@
  * HTTP routes and a real throwaway dsh web boot. No Guardian is required.
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -50,8 +50,8 @@ function gate1() {
     const guardian = pkg?.dsh?.guardian
     if (guardian?.healthPath === '/dsh-ops/status' && Number(guardian?.protocolVersion) >= 1) ok('manifest declares a passive Guardian health contract')
     else bad('manifest must declare dsh.guardian.healthPath = /dsh-ops/status (protocolVersion >= 1)')
-    if (pkg.version === '0.7.0' && pkg.publishConfig?.access === 'public' && pkg.publishConfig?.registry === 'https://registry.npmjs.org/') ok('manifest is ready for the public npm release')
-    else bad('manifest must declare the 0.7.0 public npm release contract')
+    if (pkg.version === '0.7.1' && pkg.publishConfig?.access === 'public' && pkg.publishConfig?.registry === 'https://registry.npmjs.org/') ok('manifest is ready for the public npm release')
+    else bad('manifest must declare the 0.7.1 public npm release contract')
     if (pkg.dependencies?.['qrcode-generator'] === '2.0.4') ok('manifest pins the dependency-free local QR encoder')
     else bad('manifest must pin qrcode-generator 2.0.4')
     const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
@@ -73,11 +73,11 @@ function gate2() {
     new Function('window', 'require', 'console', src)(windowStub, () => {}, console)
     if (captured?.name === 'dsh-ops-console' && typeof captured.apply === 'function') ok('client factory exports an installable settings section')
     else bad('client factory did not export name/apply')
-    for (const text of ['复制地址', '二维码只包含这个 HTTPS 地址', '更多访问设置', '检测连接', '每 15 秒自动更新', '访问地址已保存，但尚未生效', '远程入口已开启', '哪些账号和设备能够访问，由 Tailscale 管理', '界面与服务版本不一致', 'auth.data?.local === true', 'color-mix', 'min-height: 42px']) {
+    for (const text of ['复制地址', '二维码只包含这个 HTTPS 地址', '更多访问设置', '检测连接', '每 15 秒自动更新', '远程设置已保存，但 Harness 还没有载入', '远程入口已开启', '哪些账号和设备能够访问，由 Tailscale 管理', '界面与服务版本不一致', 'auth.data?.local === true', 'color-mix', 'min-height: 42px']) {
       if (src.includes(text)) ok('client includes interaction: ' + text)
       else bad('client is missing interaction: ' + text)
     }
-    for (const text of ['生成确认码', '复制连接说明', '发送连接说明', '设备记录保留', '忘记全部记录', '分享地址', '立即刷新']) {
+    for (const text of ['生成确认码', '复制连接说明', '发送连接说明', '设备记录保留', '忘记全部记录', '分享地址', '立即刷新', 'Harness 接受的访问地址', '添加地址']) {
       if (!src.includes(text)) ok('client omits obsolete interaction: ' + text)
       else bad('client still includes obsolete interaction: ' + text)
     }
@@ -142,6 +142,11 @@ if (args[0] === 'status' && args[1] === '--json') {
     if (Object.keys(handlers).length === 0) delete config.Web[authority]
   }
   writeFileSync(process.env.DSH_OPS_TEST_TS_STATE, JSON.stringify(config))
+} else if (args[0] === 'serve' && args[1] === '--bg') {
+  const config = JSON.parse(readFileSync(process.env.DSH_OPS_TEST_TS_STATE, 'utf8'))
+  config.Web ||= {}
+  config.Web['dsh-host.example.ts.net:443'] = { Handlers: { '/': { Proxy: 'http://127.0.0.1:3080' } } }
+  writeFileSync(process.env.DSH_OPS_TEST_TS_STATE, JSON.stringify(config))
 } else {
   process.stderr.write('unexpected fake tailscale command: ' + args.join(' '))
   process.exitCode = 2
@@ -165,7 +170,7 @@ if (args[0] === 'status' && args[1] === '--json') {
       if (result.status === 200 && data.ok === true) ok(path + ' returns usable JSON')
       else bad(path + ' failed: ' + result.output.slice(0, 300))
     }
-    for (const path of ['/dsh-ops/tailscale/enable', '/dsh-ops/tailscale/disable', '/dsh-ops/trust/add', '/dsh-ops/trust/remove']) {
+    for (const path of ['/dsh-ops/tailscale/enable', '/dsh-ops/tailscale/disable']) {
       if (handlers.has(path)) ok(path + ' route registered')
       else bad(path + ' route missing')
     }
@@ -175,18 +180,18 @@ if (args[0] === 'status' && args[1] === '--json') {
     const publicTrust = JSON.parse((await invoke(handlers.get('/dsh-ops/trust'), { url: '/dsh-ops/trust' })).output)
     if (!('patchFile' in publicTrust)) ok('trust response omits the local profile path')
     else bad('trust response leaks local path: ' + JSON.stringify(publicTrust))
-    const removed = ['/dsh-ops/summary', '/dsh-ops/diagnose', '/dsh-ops/timeline', '/dsh-ops/report', '/dsh-ops/balance', '/dsh-ops/settings', '/dsh-ops/settings/save', '/dsh-ops/logs', '/dsh-ops/pairing/create', '/dsh-ops/pairing/cancel', '/dsh-ops/pairing/redeem', '/dsh-ops/remote/checkin', '/dsh-ops/sessions', '/dsh-ops/sessions/revoke', '/dsh-ops/sessions/revoke-all', '/dsh-ops/auth/rotate-master', '/dsh-ops/security/tighten']
+    const removed = ['/dsh-ops/summary', '/dsh-ops/diagnose', '/dsh-ops/timeline', '/dsh-ops/report', '/dsh-ops/balance', '/dsh-ops/settings', '/dsh-ops/settings/save', '/dsh-ops/logs', '/dsh-ops/pairing/create', '/dsh-ops/pairing/cancel', '/dsh-ops/pairing/redeem', '/dsh-ops/remote/checkin', '/dsh-ops/sessions', '/dsh-ops/sessions/revoke', '/dsh-ops/sessions/revoke-all', '/dsh-ops/auth/rotate-master', '/dsh-ops/security/tighten', '/dsh-ops/trust/add', '/dsh-ops/trust/remove']
     for (const path of removed) {
       if (handlers.has(path)) bad(path + ' route should have been removed')
       else ok(path + ' is no longer registered')
     }
     if (!handlers.has('/dsh-ops/guardian') && !handlers.has('/dsh-ops/restart') && !handlers.has('/dsh-ops/preflight')) ok('no Guardian control routes are registered')
     else bad('obsolete Guardian control route remains registered')
-    const add = handlers.get('/dsh-ops/trust/add')
-    const denied = await invoke(add, { method: 'POST', url: '/dsh-ops/trust/add', headers: { origin: 'http://localhost', host: 'localhost' }, body: JSON.stringify({ host: 'mac-mini.ts.net' }) })
+    const enable = handlers.get('/dsh-ops/tailscale/enable')
+    const denied = await invoke(enable, { method: 'POST', url: '/dsh-ops/tailscale/enable', headers: { origin: 'http://localhost', host: 'localhost' } })
     if (denied.status === 401 && JSON.parse(denied.output).authRequired === true) ok('writes still require an admin token')
     else bad('write authentication guard failed: ' + denied.output)
-    const crossSite = await invoke(add, { method: 'POST', url: '/dsh-ops/trust/add', headers: {}, body: '{}' })
+    const crossSite = await invoke(enable, { method: 'POST', url: '/dsh-ops/tailscale/enable', headers: {} })
     if (crossSite.status === 403) ok('writes still reject untrusted origins')
     else bad('CSRF guard failed: ' + crossSite.output)
 
@@ -197,24 +202,12 @@ if (args[0] === 'status' && args[1] === '--json') {
     if (readyAccess.invitation?.url === 'https://dsh-host.example.ts.net/' && qrSvg.startsWith('<svg') && qrSvg.includes('<path')) ok('ready remote access includes a permanent local SVG QR')
     else bad('permanent local QR failed: ' + JSON.stringify(readyAccess.invitation))
     const remoteAuth = JSON.parse((await invoke(handlers.get('/dsh-ops/auth'), { url: '/dsh-ops/auth', headers: remoteHeaders })).output)
-    if (remoteAuth.local === false && remoteAuth.token === undefined && remoteAuth.contractVersion === 2) ok('remote page learns the UI contract without receiving local management credentials')
+    if (remoteAuth.local === false && remoteAuth.token === undefined && remoteAuth.contractVersion === 3) ok('remote page learns the UI contract without receiving local management credentials')
     else bad('remote auth boundary failed: ' + JSON.stringify(remoteAuth))
     const remoteDisable = await invoke(handlers.get('/dsh-ops/tailscale/disable'), { method: 'POST', url: '/dsh-ops/tailscale/disable', headers: remoteHeaders })
-    const remoteTrust = await invoke(add, { method: 'POST', url: '/dsh-ops/trust/add', headers: remoteHeaders, body: JSON.stringify({ host: 'remote-change.example.ts.net' }) })
-    if (remoteDisable.status === 403 && remoteTrust.status === 403 && JSON.parse(remoteDisable.output).localRequired === true) ok('remote devices cannot manage the Mac remote-access configuration')
+    const remoteEnable = await invoke(enable, { method: 'POST', url: '/dsh-ops/tailscale/enable', headers: remoteHeaders })
+    if (remoteDisable.status === 403 && remoteEnable.status === 403 && JSON.parse(remoteDisable.output).localRequired === true) ok('remote devices cannot manage the Mac remote-access configuration')
     else bad('remote device unexpectedly retained local management privileges')
-
-    const validAdd = await invoke(add, { method: 'POST', url: '/dsh-ops/trust/add', headers: authHeaders, body: JSON.stringify({ host: 'extra.example.ts.net' }) })
-    const backupDir = join(home, 'ops-console', 'config-backups')
-    const tempFiles = readdirSync(join(home, 'profiles', 'web')).filter((name) => name.includes('.new-'))
-    if (validAdd.status === 200 && JSON.parse(validAdd.output).ok && readdirSync(backupDir).length === 1 && tempFiles.length === 0) ok('trusted-host update uses atomic replacement and a bounded backup')
-    else bad('atomic trusted-host update failed: ' + validAdd.output)
-    const pendingTrust = JSON.parse((await invoke(handlers.get('/dsh-ops/trust'), { url: '/dsh-ops/trust' })).output)
-    if (pendingTrust.pendingRestart === true && Array.isArray(pendingTrust.activeHosts)) ok('trust route distinguishes saved configuration from the boot-time active configuration')
-    else bad('pending trusted-host state was not reported')
-    const pendingAccess = JSON.parse((await invoke(handlers.get('/dsh-ops/tailscale'), { url: '/dsh-ops/tailscale' })).output)
-    if (pendingAccess.invitation === null) ok('QR stays hidden while the trusted address is waiting for restart')
-    else bad('QR appeared before the trusted address became active')
 
     const disable = handlers.get('/dsh-ops/tailscale/disable')
     const disabled = await invoke(disable, { method: 'POST', url: '/dsh-ops/tailscale/disable', headers: authHeaders })
@@ -227,15 +220,64 @@ if (args[0] === 'status' && args[1] === '--json') {
     if (!tailscaleCalls.includes('reset') && tailscaleCalls.includes('"off"')) ok('disable uses scoped off, never global serve reset')
     else bad('disable issued an unsafe Tailscale command: ' + tailscaleCalls)
 
+    writeFileSync(join(home, 'profiles', 'web', 'cordis.patch.yml'), '- id: connection\n  config:\n    trustedHosts: []\n')
+    const enabled = await invoke(enable, { method: 'POST', url: '/dsh-ops/tailscale/enable', headers: authHeaders })
+    const enabledData = JSON.parse(enabled.output)
+    const backupDir = join(home, 'ops-console', 'config-backups')
+    const tempFiles = readdirSync(join(home, 'profiles', 'web')).filter((name) => name.includes('.new-'))
+    const savedPatch = readFileSync(join(home, 'profiles', 'web', 'cordis.patch.yml'), 'utf8')
+    if (enabled.status === 200 && enabledData.ok === true && enabledData.autoTrusted === true && savedPatch.includes('dsh-host.example.ts.net') && readdirSync(backupDir).length === 1 && tempFiles.length === 0) ok('enabling automatically saves only the detected Tailscale address with atomic replacement')
+    else bad('automatic Tailscale address setup failed: ' + enabled.output)
+
+    const patchPath = join(home, 'profiles', 'web', 'cordis.patch.yml')
+    writeFileSync(patchPath, '- id: connection\n  config:\n    trustedHosts:\n      - existing.example.com\n')
+    renameSync(backupDir, backupDir + '.held')
+    writeFileSync(backupDir, 'isolated fixture: prevent backup directory creation')
+    const callsBeforeRetry = readFileSync(tailscaleLog, 'utf8')
+    const partial = JSON.parse((await invoke(enable, { method: 'POST', headers: authHeaders })).output)
+    if (partial.ok === false && partial.partial === true && partial.stage === 'address' && partial.message.includes('继续完成设置')) ok('failed configuration write reports partial success with a retry, not false success')
+    else bad('partial setup was not actionable: ' + JSON.stringify(partial))
+    rmSync(backupDir)
+    renameSync(backupDir + '.held', backupDir)
+    const retried = JSON.parse((await invoke(enable, { method: 'POST', headers: authHeaders })).output)
+    const retryCommands = readFileSync(tailscaleLog, 'utf8').slice(callsBeforeRetry.length)
+    if (retried.ok && retried.autoTrusted && retried.restartRequired && !retryCommands.includes('"--bg"') && readFileSync(patchPath, 'utf8').includes('existing.example.com')) ok('retry completes only missing settings and preserves Serve and existing addresses')
+    else bad('partial setup retry failed: ' + JSON.stringify(retried))
+
+    const publicServe = { Web: { 'dsh-host.example.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:3080' } } } }, AllowFunnel: { 'dsh-host.example.ts.net:443': true } }
+    writeFileSync(tailscaleState, JSON.stringify(publicServe))
+    const exposedWrite = JSON.parse((await invoke(enable, { method: 'POST', headers: authHeaders })).output)
+    const exposedAccess = JSON.parse((await invoke(handlers.get('/dsh-ops/tailscale'))).output)
+    if (exposedWrite.ok === false && exposedWrite.stage === 'exposure' && exposedAccess.exposure?.state === 'detected' && exposedAccess.invitation === null) ok('Funnel warning prevents misleading QR and setup without changing public configuration')
+    else bad('Funnel route protection failed')
+    if (JSON.stringify(JSON.parse(readFileSync(tailscaleState, 'utf8'))) === JSON.stringify(publicServe)) ok('exposure detection never mutates Tailscale')
+    else bad('exposure detection mutated Tailscale')
+    writeFileSync(tailscaleState, JSON.stringify({ AllowFunnel: { 'dsh-host.example.ts.net:443': true } }))
+    const staleFunnel = JSON.parse((await invoke(enable, { method: 'POST', headers: authHeaders })).output)
+    if (!staleFunnel.ok && staleFunnel.stage === 'exposure') ok('setup never creates a new Harness route under a pre-enabled Funnel listener')
+    else bad('setup would create a public Harness route')
+    writeFileSync(tailscaleState, '{invalid')
+    await invoke(enable, { method: 'POST', headers: authHeaders })
+    const unknownAccess = JSON.parse((await invoke(handlers.get('/dsh-ops/tailscale'))).output)
+    if (unknownAccess.exposure?.state === 'unknown' && unknownAccess.invitation === null) ok('unreadable Serve configuration is unknown, never safe')
+    else bad('unreadable Serve configuration was treated as safe')
+
+    writeFileSync(join(home, 'profiles', 'web', 'cordis.patch.yml'), '- id: connection\n  config:\n    trustedHosts:\n      - changed-host.example.ts.net\n')
+    const pendingTrust = JSON.parse((await invoke(handlers.get('/dsh-ops/trust'), { url: '/dsh-ops/trust' })).output)
+    if (pendingTrust.pendingRestart === true && !('hosts' in pendingTrust) && !('activeHosts' in pendingTrust)) ok('trust status reports reload state without exposing editable host lists')
+    else bad('minimal pending trusted-host state was not reported')
+    const pendingAccess = JSON.parse((await invoke(handlers.get('/dsh-ops/tailscale'), { url: '/dsh-ops/tailscale' })).output)
+    if (pendingAccess.invitation === null) ok('QR stays hidden while the automatic Tailscale address is waiting for restart')
+    else bad('QR appeared before the automatic Tailscale address became active')
+
     writeFileSync(tailscaleState, JSON.stringify({
       Web: { 'dsh-host.example.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:9999' } } } },
     }))
     await new Promise((resolve) => setTimeout(resolve, 4100))
-    const enable = handlers.get('/dsh-ops/tailscale/enable')
-    const enabled = await invoke(enable, { method: 'POST', url: '/dsh-ops/tailscale/enable', headers: authHeaders })
-    const enabledData = JSON.parse(enabled.output)
-    if (enabled.status === 200 && enabledData.ok === false && enabledData.conflict === true) ok('existing HTTPS root proxy is never overwritten')
-    else bad('Serve root conflict was not rejected: ' + enabled.output)
+    const conflictEnable = await invoke(enable, { method: 'POST', url: '/dsh-ops/tailscale/enable', headers: authHeaders })
+    const conflictData = JSON.parse(conflictEnable.output)
+    if (conflictEnable.status === 200 && conflictData.ok === false && conflictData.conflict === true) ok('existing HTTPS root proxy is never overwritten')
+    else bad('Serve root conflict was not rejected: ' + conflictEnable.output)
 
     writeFileSync(tailscaleState, JSON.stringify({ Web: { 'dsh-host.example.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:3080' } } } } }))
     writeFileSync(tailscaleRuntime, JSON.stringify({ BackendState: 'Stopped', Health: ['Tailscale is stopped.'], Self: { DNSName: 'dsh-host.example.ts.net.', Online: false } }))
@@ -323,6 +365,10 @@ async function gate4() {
 }
 
 console.log('dsh-ops-console verify — ' + new Date().toISOString())
+for (const script of ['test-exposure.mjs', 'test-client.mjs']) {
+  const result = spawnSync(process.execPath, [join(ROOT, 'scripts', script)], { stdio: 'inherit' })
+  if (result.status !== 0) bad(script + ' failed')
+}
 gate1()
 gate2()
 await gate3()
