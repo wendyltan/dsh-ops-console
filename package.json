@@ -1,6 +1,6 @@
 {
   "name": "dsh-ops-console",
-  "version": "0.7.1",
+  "version": "0.7.3",
   "description": "DeepSeek Harness 的简洁远程访问面板：准备 Tailscale 入口、检查就绪状态并生成本地访问二维码。",
   "type": "module",
   "main": "lib/index.js",

@@ -50,8 +50,8 @@ function gate1() {
     const guardian = pkg?.dsh?.guardian
     if (guardian?.healthPath === '/dsh-ops/status' && Number(guardian?.protocolVersion) >= 1) ok('manifest declares a passive Guardian health contract')
     else bad('manifest must declare dsh.guardian.healthPath = /dsh-ops/status (protocolVersion >= 1)')
-    if (pkg.version === '0.7.1' && pkg.publishConfig?.access === 'public' && pkg.publishConfig?.registry === 'https://registry.npmjs.org/') ok('manifest is ready for the public npm release')
-    else bad('manifest must declare the 0.7.1 public npm release contract')
+    if (pkg.version === '0.7.3' && pkg.publishConfig?.access === 'public' && pkg.publishConfig?.registry === 'https://registry.npmjs.org/') ok('manifest is ready for the public npm release')
+    else bad('manifest must declare the 0.7.3 public npm release contract')
     if (pkg.dependencies?.['qrcode-generator'] === '2.0.4') ok('manifest pins the dependency-free local QR encoder')
     else bad('manifest must pin qrcode-generator 2.0.4')
     const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
@@ -73,11 +73,11 @@ function gate2() {
     new Function('window', 'require', 'console', src)(windowStub, () => {}, console)
     if (captured?.name === 'dsh-ops-console' && typeof captured.apply === 'function') ok('client factory exports an installable settings section')
     else bad('client factory did not export name/apply')
-    for (const text of ['复制地址', '二维码只包含这个 HTTPS 地址', '更多访问设置', '检测连接', '每 15 秒自动更新', '远程设置已保存，但 Harness 还没有载入', '远程入口已开启', '哪些账号和设备能够访问，由 Tailscale 管理', '界面与服务版本不一致', 'auth.data?.local === true', 'color-mix', 'min-height: 42px']) {
+    for (const text of ['复制地址', '二维码包含本次启动的登录令牌', '登录二维码只在 Mac 本机页面生成', '更多访问设置', '检测连接', '每 15 秒自动更新', '远程设置已保存，但 Harness 还没有载入', '远程入口已开启', '哪些账号和设备能够访问，由 Tailscale 管理', '界面与服务版本不一致', 'auth.data?.local === true', 'color-mix', 'min-height: 42px']) {
       if (src.includes(text)) ok('client includes interaction: ' + text)
       else bad('client is missing interaction: ' + text)
     }
-    for (const text of ['生成确认码', '复制连接说明', '发送连接说明', '设备记录保留', '忘记全部记录', '分享地址', '立即刷新', 'Harness 接受的访问地址', '添加地址']) {
+    for (const text of ['二维码只包含这个 HTTPS 地址', '生成确认码', '复制连接说明', '发送连接说明', '设备记录保留', '忘记全部记录', '分享地址', '立即刷新', 'Harness 接受的访问地址', '添加地址']) {
       if (!src.includes(text)) ok('client omits obsolete interaction: ' + text)
       else bad('client still includes obsolete interaction: ' + text)
     }
@@ -123,7 +123,7 @@ async function gate3() {
       'other-service.example.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:9999' } } },
     },
   }))
-  writeFileSync(tailscaleRuntime, JSON.stringify({ BackendState: 'Running', Health: [], Self: { DNSName: 'dsh-host.example.ts.net.', Online: true }, Peer: {} }))
+  writeFileSync(tailscaleRuntime, JSON.stringify({ BackendState: 'Running', Health: [], Self: { DNSName: 'dsh-host.example.ts.net.', Online: true, TailscaleIPs: ['127.0.0.1'] }, Peer: {} }))
   writeFileSync(fakeTailscale, `#!/usr/bin/env node
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 const args = process.argv.slice(2)
@@ -160,7 +160,16 @@ if (args[0] === 'status' && args[1] === '--json') {
   const handlers = new Map()
   try {
     const mod = await import(new URL('../lib/index.js?verify=' + Date.now(), import.meta.url))
-    mod.apply({ credentials: undefined, webServer: { register: (route) => { handlers.set(route.path, route); return () => {} } }, effect: (fn) => fn() })
+    mod.apply({
+      credentials: undefined,
+      webServer: { register: (route) => { handlers.set(route.path, route); return () => {} } },
+      // Connection owns the process launch token; the panel must ask it rather
+      // than guess a token or fall back to a token-less QR.
+      get: (service) => service === 'connection'
+        ? { authenticatedUrl: (baseUrl) => baseUrl + '?token=test-launch-token' }
+        : undefined,
+      effect: (fn) => fn(),
+    })
     const expected = ['/dsh-ops/status', '/dsh-ops/tailscale', '/dsh-ops/tailscale/selftest', '/dsh-ops/trust', '/dsh-ops/auth']
     for (const path of expected) {
       const route = handlers.get(path)
@@ -174,6 +183,9 @@ if (args[0] === 'status' && args[1] === '--json') {
       if (handlers.has(path)) ok(path + ' route registered')
       else bad(path + ' route missing')
     }
+    const fallbackProbe = JSON.parse((await invoke(handlers.get('/dsh-ops/tailscale/selftest'), { url: '/dsh-ops/tailscale/selftest' })).output)
+    if (fallbackProbe.verdict === 'not-reachable' && fallbackProbe.via === 'tailnet-ip' && fallbackProbe.ip === '127.0.0.1') ok('self-test falls back to the Tailscale IP when local DNS cannot reach the URL')
+    else bad('self-test did not use the Tailscale IP fallback: ' + JSON.stringify(fallbackProbe))
     const publicStatus = JSON.parse((await invoke(handlers.get('/dsh-ops/status'), { url: '/dsh-ops/status' })).output)
     if (!('pid' in publicStatus) && !('port' in publicStatus) && !('engine' in publicStatus) && !('url' in publicStatus)) ok('public health omits process and engine details')
     else bad('public health leaks implementation details: ' + JSON.stringify(publicStatus))
@@ -197,10 +209,16 @@ if (args[0] === 'status' && args[1] === '--json') {
 
     const authHeaders = { origin: 'http://localhost', host: 'localhost', 'x-dsh-ops-token': 'v'.repeat(48) }
     const remoteHeaders = { origin: 'https://dsh-host.example.ts.net', host: 'dsh-host.example.ts.net' }
-    const readyAccess = JSON.parse((await invoke(handlers.get('/dsh-ops/tailscale'), { url: '/dsh-ops/tailscale' })).output)
+    const readyAccess = JSON.parse((await invoke(handlers.get('/dsh-ops/tailscale'), { url: '/dsh-ops/tailscale', headers: authHeaders })).output)
     const qrSvg = readyAccess.invitation?.qrSvg ?? ''
-    if (readyAccess.invitation?.url === 'https://dsh-host.example.ts.net/' && qrSvg.startsWith('<svg') && qrSvg.includes('<path')) ok('ready remote access includes a permanent local SVG QR')
-    else bad('permanent local QR failed: ' + JSON.stringify(readyAccess.invitation))
+    if (readyAccess.invitation?.url === 'https://dsh-host.example.ts.net/?token=test-launch-token' && qrSvg.startsWith('<svg') && qrSvg.includes('<path')) ok('ready remote access includes a token-bearing local SVG QR')
+    else bad('token-bearing local QR failed: ' + JSON.stringify(readyAccess.invitation))
+    const anonymousAccess = JSON.parse((await invoke(handlers.get('/dsh-ops/tailscale'), { url: '/dsh-ops/tailscale' })).output)
+    if (anonymousAccess.invitation === null && !JSON.stringify(anonymousAccess).includes('test-launch-token')) ok('anonymous callers never receive the login invitation')
+    else bad('anonymous callers received the login invitation: ' + JSON.stringify(anonymousAccess.invitation))
+    const remoteTokenAccess = JSON.parse((await invoke(handlers.get('/dsh-ops/tailscale'), { url: '/dsh-ops/tailscale', headers: { ...remoteHeaders, 'x-dsh-ops-token': 'v'.repeat(48) } })).output)
+    if (remoteTokenAccess.invitation === null) ok('remote devices never receive the login invitation')
+    else bad('remote device received the login invitation: ' + JSON.stringify(remoteTokenAccess.invitation))
     const remoteAuth = JSON.parse((await invoke(handlers.get('/dsh-ops/auth'), { url: '/dsh-ops/auth', headers: remoteHeaders })).output)
     if (remoteAuth.local === false && remoteAuth.token === undefined && remoteAuth.contractVersion === 3) ok('remote page learns the UI contract without receiving local management credentials')
     else bad('remote auth boundary failed: ' + JSON.stringify(remoteAuth))
@@ -247,7 +265,7 @@ if (args[0] === 'status' && args[1] === '--json') {
     const publicServe = { Web: { 'dsh-host.example.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:3080' } } } }, AllowFunnel: { 'dsh-host.example.ts.net:443': true } }
     writeFileSync(tailscaleState, JSON.stringify(publicServe))
     const exposedWrite = JSON.parse((await invoke(enable, { method: 'POST', headers: authHeaders })).output)
-    const exposedAccess = JSON.parse((await invoke(handlers.get('/dsh-ops/tailscale'))).output)
+    const exposedAccess = JSON.parse((await invoke(handlers.get('/dsh-ops/tailscale'), { url: '/dsh-ops/tailscale', headers: authHeaders })).output)
     if (exposedWrite.ok === false && exposedWrite.stage === 'exposure' && exposedAccess.exposure?.state === 'detected' && exposedAccess.invitation === null) ok('Funnel warning prevents misleading QR and setup without changing public configuration')
     else bad('Funnel route protection failed')
     if (JSON.stringify(JSON.parse(readFileSync(tailscaleState, 'utf8'))) === JSON.stringify(publicServe)) ok('exposure detection never mutates Tailscale')
@@ -258,7 +276,7 @@ if (args[0] === 'status' && args[1] === '--json') {
     else bad('setup would create a public Harness route')
     writeFileSync(tailscaleState, '{invalid')
     await invoke(enable, { method: 'POST', headers: authHeaders })
-    const unknownAccess = JSON.parse((await invoke(handlers.get('/dsh-ops/tailscale'))).output)
+    const unknownAccess = JSON.parse((await invoke(handlers.get('/dsh-ops/tailscale'), { url: '/dsh-ops/tailscale', headers: authHeaders })).output)
     if (unknownAccess.exposure?.state === 'unknown' && unknownAccess.invitation === null) ok('unreadable Serve configuration is unknown, never safe')
     else bad('unreadable Serve configuration was treated as safe')
 
@@ -266,7 +284,7 @@ if (args[0] === 'status' && args[1] === '--json') {
     const pendingTrust = JSON.parse((await invoke(handlers.get('/dsh-ops/trust'), { url: '/dsh-ops/trust' })).output)
     if (pendingTrust.pendingRestart === true && !('hosts' in pendingTrust) && !('activeHosts' in pendingTrust)) ok('trust status reports reload state without exposing editable host lists')
     else bad('minimal pending trusted-host state was not reported')
-    const pendingAccess = JSON.parse((await invoke(handlers.get('/dsh-ops/tailscale'), { url: '/dsh-ops/tailscale' })).output)
+    const pendingAccess = JSON.parse((await invoke(handlers.get('/dsh-ops/tailscale'), { url: '/dsh-ops/tailscale', headers: authHeaders })).output)
     if (pendingAccess.invitation === null) ok('QR stays hidden while the automatic Tailscale address is waiting for restart')
     else bad('QR appeared before the automatic Tailscale address became active')
 
@@ -310,6 +328,7 @@ function setupSmoke() {
   mkdirSync(SMOKE_PROFILE, { recursive: true })
   writeFileSync(join(SMOKE_PROFILE, 'package.json'), JSON.stringify({ name: 'dsh-ops-smoke', private: true, dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-ops-console'] } } }, null, 2) + '\n')
   writeFileSync(join(SMOKE_PROFILE, 'cordis.yml'), '[]\n')
+  writeFileSync(join(SMOKE_PROFILE, 'cordis.patch.yml'), '- id: connection\n  config:\n    trustedHosts:\n      - dsh-host.example.ts.net\n')
   const target = join(SMOKE_PROFILE, 'node_modules')
   mkdirSync(target, { recursive: true })
   for (const entry of readdirSync(LIVE_PROFILE_NM)) {
@@ -338,9 +357,25 @@ async function gate4() {
   const dsh = resolveDshBin()
   if (!dsh || !existsSync(LIVE_PROFILE_NM)) { bad('dsh binary or live profile modules unavailable for smoke boot'); return }
   setupSmoke()
+  const smokeTailscale = join(SMOKE_HOME, 'tailscale.mjs')
+  writeFileSync(smokeTailscale, `#!/usr/bin/env node
+const args = process.argv.slice(2)
+if (args[0] === 'status' && args[1] === '--json') {
+  process.stdout.write(JSON.stringify({ BackendState: 'Running', Health: [], Self: { DNSName: 'dsh-host.example.ts.net.', Online: true }, Peer: {} }))
+} else if (args[0] === 'serve' && args[1] === 'status') {
+  process.stdout.write(JSON.stringify({ Web: { 'dsh-host.example.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:3080' } } } } }))
+} else {
+  process.stderr.write('unexpected fake tailscale command: ' + args.join(' '))
+  process.exitCode = 2
+}
+`)
+  chmodSync(smokeTailscale, 0o755)
   const port = await freePort()
   const base = 'http://127.0.0.1:' + port
-  const child = spawn(process.execPath, [dsh, '--profile', 'ops-smoke', '--host', '127.0.0.1', '--port', String(port)], { env: { ...process.env, DSH_HOME: SMOKE_HOME }, stdio: 'ignore' })
+  let output = ''
+  const child = spawn(process.execPath, [dsh, '--profile', 'ops-smoke', '--host', '127.0.0.1', '--port', String(port), '--no-open'], { env: { ...process.env, DSH_HOME: SMOKE_HOME, DSH_OPS_TAILSCALE_BIN: smokeTailscale, DSH_OPS_ADMIN_TOKEN: 's'.repeat(48) }, stdio: ['ignore', 'pipe', 'pipe'] })
+  child.stdout.on('data', (chunk) => { output += chunk })
+  child.stderr.on('data', () => {})
   try {
     let ready = null
     const end = Date.now() + 90000
@@ -356,9 +391,31 @@ async function gate4() {
       if (response.ok && data?.ok) ok(path + ' returns JSON')
       else bad(path + ' failed')
     }
-    const client = await fetch(base + '/plugins/dsh-ops-console/client.js').then((r) => r.text())
-    if (client === readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8')) ok('smoke boot loaded this repository client')
-    else bad('smoke boot did not load this repository client')
+    // The engine serves plugin clients through revision-addressed combo URLs,
+    // so fetch the URL it advertised instead of guessing a raw file path.
+    const loginUrl = output.match(/dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=[A-Za-z0-9_-]+)/)?.[1]
+    if (!loginUrl) {
+      bad('smoke boot did not print a login URL for the client bundle check')
+    } else {
+      const issued = await fetch(loginUrl, { redirect: 'manual' })
+      const cookie = (issued.headers.getSetCookie?.()[0] ?? issued.headers.get('set-cookie') ?? '').split(';')[0]
+      const index = await fetch(base + '/', { headers: { cookie } }).then((r) => r.text())
+      const comboPath = index.match(/plugins\/\?\?[^"]*dsh-ops-console\/client\.js[^"]*/)?.[0]
+      if (!comboPath) {
+        bad('smoke boot did not compose this repository client into the boot bundle')
+      } else {
+        const bundle = await fetch(base + '/' + comboPath.replaceAll('&amp;', '&'), { headers: { cookie } }).then((r) => r.text())
+        if (bundle.includes('dshops-root') && bundle.includes('二维码包含本次启动的登录令牌，只在 Mac 本机页面生成')) ok('smoke boot served this repository client bundle')
+        else bad('smoke boot served a different client bundle')
+      }
+    }
+    const adminHeaders = { 'x-dsh-ops-token': 's'.repeat(48) }
+    const accessData = await fetch(base + '/dsh-ops/tailscale', { headers: adminHeaders }).then((r) => r.json()).catch(() => null)
+    if (typeof accessData?.invitation?.url === 'string' && accessData.invitation.url.includes('?token=') && accessData.invitation.qrSvg?.startsWith('<svg')) ok('real Connection service mints a token-bearing login QR')
+    else bad('real token-bearing login QR missing: ' + JSON.stringify(accessData?.invitation))
+    const anonymous = await fetch(base + '/dsh-ops/tailscale').then((r) => r.json()).catch(() => null)
+    if (anonymous?.invitation === null) ok('real server withholds the login QR without the local admin token')
+    else bad('real server exposed the login QR anonymously: ' + JSON.stringify(anonymous?.invitation))
   } finally {
     if (child.exitCode === null) child.kill('SIGTERM')
   }
