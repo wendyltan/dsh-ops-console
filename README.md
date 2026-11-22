@@ -1,152 +1,174 @@
+<div align="center">
+
 # dsh-ops-console
 
-> Mac 留在桌边，换到手机上继续用 Harness。
+**Mac 留在桌边，换到手机上继续用 Harness。**
 
-dsh-ops-console 是 DeepSeek Harness 的可选 Web 插件，入口在“设置 → 远程访问”。它把 Tailscale 入口设置、连接状态和访问二维码放在一起，让你不用手动拼命令、填写域名，就能准备好远程访问。
+DeepSeek Harness 可选远程访问插件 · Tailscale Serve · 本地二维码 · Node.js 18+
 
-它不会把 Harness 默认公开到互联网。正常使用方式是：Mac 和手机都连接到获准访问的 Tailscale 网络，再通过二维码或地址打开 Harness。
+<p>
+  <a href="https://www.npmjs.com/package/dsh-ops-console">npm</a> ·
+  <a href="#它解决什么问题">核心能力</a> ·
+  <a href="#开始使用">开始使用</a> ·
+  <a href="#页面上的状态是什么意思">状态对照</a> ·
+  <a href="#安全和隐私">安全和隐私</a> ·
+  <a href="#更新记录">更新记录</a>
+</p>
 
-[在 npm 查看 dsh-ops-console](https://www.npmjs.com/package/dsh-ops-console)
+</div>
+
+---
+
+`dsh-ops-console` 是 DeepSeek Harness 的可选 Web 插件，入口在 **「设置 → 远程访问」**。它将 Tailscale 入口配置、连接状态检查与本地生成的登录二维码整合在一起，让你无需手动拼接命令或配置域名即可在手机或另一台电脑上继续使用 Harness。
+
+> [!IMPORTANT]
+> 它不会把 Harness 默认公开到互联网。正常使用方式是：Mac 和手机都连接到获准访问的 Tailscale 网络（tailnet），再通过二维码或 HTTPS 地址打开 Harness。所有开启与关闭入口的管理操作**仅限 Mac 本机**执行。
+
+## 访问链路
+
+```mermaid
+flowchart LR
+    Phone["手机 / 远程设备<br/>已登录获准 Tailscale 账号"]
+    ACL["Tailnet ACL<br/>由 Tailscale 控制设备与用户权限"]
+    Serve["Mac 本机 Tailscale Serve<br/>自动使用当前 *.ts.net 地址"]
+    Plugin["dsh-ops-console<br/>本地生成带令牌二维码 · 状态检查"]
+    DSH["DeepSeek Harness<br/>仅本机重启加载新设置"]
+
+    Phone <-->|"HTTPS (Tailnet)"| ACL
+    ACL <--> Serve
+    Serve <--> Plugin
+    Plugin <-->|"读取状态 / 原子写入设置"| DSH
+```
 
 ## 它解决什么问题
 
-远程打开 Harness，真正麻烦的往往不是得到一个网址，而是回答下面几件事：Tailscale 到底有没有连上？Harness 是否已经准备好？关掉入口会不会误伤其他服务？
+远程打开 Harness，真正麻烦的往往不是得到一个网址，而是确认 **Tailscale 是否已连接、Harness 是否已生效、关闭入口会不会误伤其他服务**。`dsh-ops` 专注于四件事：
 
-dsh-ops 主要做四件事：
+- **准备入口**：为 Harness 创建 Tailscale Serve 入口并自动配置当前 Tailscale 地址；若 HTTPS 根地址已被其他服务占用则立即停止，不直接覆盖。
+- **扫码打开**：展示就绪状态、本机生成的二维码（无第三方接口外传）和可复制地址；扫码为远程设备建立 30 天 Harness 浏览器会话。
+- **断点续设**：如果 Serve 入口已创建但 Harness 配置尚未保存成功，点「继续完成设置」即可补齐，无需先关闭重来。
+- **公网风险告警**：检测到直接指向 Harness 的 Tailscale Funnel 公网配置时显示警告并暂停展示常规扫码入口，不擅自修改其他服务。
 
-- **准备入口**：为 Harness 创建 Tailscale Serve 入口，并自动配置当前 Tailscale 地址；遇到冲突会停止，不直接覆盖其他服务。
-- **扫码打开**：显示就绪状态、本地生成的二维码和可复制地址。开启与关闭入口只能在 Mac 本机操作。
-- **失败后能继续**：如果入口已创建，但 Harness 设置没有保存成功，点“继续完成设置”即可重试，不必先关掉重来。
-- **发现公网配置时提醒**：检测到直接指向 Harness 的 Funnel 配置时显示警告，暂停展示常规扫码入口，不自动修改其他服务。
-
-dsh-ops 有意不做引擎管理：它不会安装、更新、重启或恢复 Harness，也不读取余额、日志、API Key、提示词或会话正文。这些本机能力由 [dsh-desktop](https://github.com/wendyltan/dsh-desktop) 负责。
+> [!NOTE]
+> `dsh-ops` 有意不做引擎生命周期管理：它不会安装、更新、重启或恢复 Harness，也不读取余额、日志、API Key、提示词或会话正文。这些本机能力由 [dsh-desktop](https://github.com/wendyltan/dsh-desktop) 负责。
 
 ## 开始使用
 
-开始前，请确认这台 Mac 已经有可正常使用的 dsh Web profile、Node.js 18 或更高版本，并已安装和登录 Tailscale。
+开始前请确认这台 Mac 已有可用的 `dsh` Web profile、**Node.js 18+**，并已安装且登录 **Tailscale**。
 
 ### 1. 安装插件
 
-推荐从 npm 安装：
-
 ```bash
+# 推荐从 npm 安装
 dsh plugin --profile web add dsh-ops-console
-```
 
-也可以安装 GitHub 版本：
-
-```bash
+# 或安装 GitHub 版本
 dsh plugin --profile web add github:wendyltan/dsh-ops-console
-```
 
-本地开发时，也可以直接安装源码目录：
-
-```bash
+# 本地开发安装源码目录
 dsh plugin --profile web add /path/to/dsh-ops-console
 ```
 
-安装后重新启动 dsh Web 服务，进入“设置 → 远程访问”。如果使用 dsh-desktop，请通过客户端的服务管理操作重启；只刷新网页不会加载新插件。
+安装后**重新启动** `dsh` Web 服务（使用 `dsh-desktop` 请在客户端重启服务；仅刷新网页不会加载新插件），进入 **「设置 → 远程访问」**。
 
 ### 2. 在 Mac 上准备远程入口
 
-点击“设置远程访问”。dsh-ops 会为 Harness 创建 Tailscale Serve 入口，并自动完成当前 Tailscale 地址所需的 Harness 设置；用户不需要填写自定义域名。
+点击 **「设置远程访问」**，`dsh-ops` 会为 Harness 创建 Tailscale Serve 入口并写入当前 Tailscale 地址，无需填写自定义域名：
 
-如果 HTTPS 根地址已经被其他服务使用，操作会停止并说明冲突，不会直接覆盖。页面提示“Harness 等待重启”时，重新启动 Harness 服务即可；下次加载后，dsh-ops 会再次确认设置是否已经生效。
-
-如果提示“入口已创建，Harness 设置尚未完成”，按页面说明检查配置目录权限，然后点击“继续完成设置”。插件只补齐缺失设置，不重新创建已有入口。提示需要重新启动时，必须重新启动 Harness 服务；仅刷新网页不生效。
+- 若 HTTPS 根地址已被其他服务占用，操作会停止并提示冲突。
+- 若提示 **「入口已创建，Harness 设置尚未完成」**，检查配置目录权限后点击 **「继续完成设置」**（仅补齐缺失设置）。
+- 若提示 **「Harness 等待重启」**，必须重启 Harness 服务，仅刷新网页不会生效。
 
 ### 3. 扫码打开
 
-入口就绪后，页面会直接显示二维码和 HTTPS 地址。在已经登录获准 Tailscale 账号的手机或电脑上扫码，或者复制页面上的登录地址打开即可。二维码带有本次启动的登录令牌，扫码后会为这台设备建立 30 天的 Harness 浏览器会话，所以新设备或 cookie 失效后也能直接进入。
+入口就绪后，在已加入同一 tailnet 且具备访问权限的手机或电脑上扫码，或复制页面上的登录地址打开。二维码包含本次启动的登录令牌，可帮助新设备或 cookie 失效的设备直接建立 30 天浏览器会话。
 
-正常使用 Serve 时，实际哪些用户和设备可以访问，由 Tailscale 的访问规则（ACL）决定；dsh-ops 不会绕过或替代这层权限。二维码在 Mac 本地生成，不会把地址发送给第三方二维码服务；其中的登录令牌只下发给 Mac 本机页面，并随 dsh Web 重启轮换。
-
-**扫码会建立 Harness 浏览器会话，但不会改变 Tailscale 权限。** 未加入 tailnet 的设备即便拿到地址也无法访问。
+> [!WARNING]
+> **扫码会建立 Harness 浏览器会话，但不会改变 Tailscale 权限。** 二维码中的登录令牌属于 bearer 凭据，请勿将本机扫码页面截图外传；令牌仅下发给 Mac 本机页面，并随 `dsh` Web 重启轮换。
 
 ## 谁能做什么
 
 | 能力 | Mac 本机 | Tailscale 远程设备 |
-| --- | --- | --- |
-| 查看入口状态和复制登录地址 | 可以 | 可以查看状态；登录地址只在 Mac 本机生成 |
+|---|---|---|
+| 查看入口状态与复制登录地址 | 可以 | 可查看状态；带令牌的登录地址仅在 Mac 本机生成 |
 | 开启或关闭远程入口 | 可以 | 不可以 |
-| 更新、重启、恢复引擎 | 不属于 dsh-ops | 不属于 dsh-ops |
+| 更新、重启或恢复引擎 | 不属于 `dsh-ops` | 不属于 `dsh-ops` |
 
-关闭远程访问时，dsh-ops 只移除 Harness 自己的 Serve 入口，不执行全局 `tailscale serve reset`，因此不会删除其他 Tailscale Serve 配置。
-
-如果设备丢失，应在 Tailscale 中撤销该设备或调整 ACL。若要关闭 Harness 的远程入口，可以在 Mac 本机展开“更多访问设置”操作；它不会修改 Tailscale ACL，也不会影响其他应用的 Serve 入口。
+关闭远程访问时，`dsh-ops` **仅移除 Harness 自己的 Serve 入口**，不执行全局 `tailscale serve reset`，不会误删其他服务的 Serve 配置。若设备丢失，请在 Tailscale 后台撤销该设备或调整 ACL。
 
 ## 页面上的状态是什么意思
 
 | 页面状态 | 发生了什么 | 你可以怎么做 |
-| --- | --- | --- |
-| Tailscale 未连接 | 应用未运行、未登录或当前离线 | 在 Mac 上打开并登录 Tailscale |
-| 入口未创建 | 还没有为 Harness 配置 Serve | 在 Mac 本机点击“设置远程访问” |
-| Harness 设置未完成 | 入口已创建，自动保存配置尚未成功 | 检查目录权限后点击“继续完成设置” |
-| Harness 等待重启 | 远程设置已保存，Harness 尚未载入 | 重新启动 Harness 服务，不能只刷新网页 |
-| 远程入口已开启 | Mac 端的三项配置已经就绪 | 扫码或复制地址，在另一台设备打开 |
-| 请检查公网访问配置 | 检测到直接指向 Harness 的 Funnel 配置 | 在 Mac 上核查并关闭对应入口的 Funnel |
-| 无法确认 Funnel 配置 | 状态读取失败或配置无法识别 | 检查本机 Tailscale；不要把“未知”当成“安全” |
+|---|---|---|
+| `Tailscale 未连接` | 应用未运行、未登录或离线 | 在 Mac 上打开并登录 Tailscale |
+| `入口未创建` | 尚未为 Harness 配置 Serve | 在 Mac 本机点击「设置远程访问」 |
+| `Harness 设置未完成` | 入口已创建，但自动保存设置未成功 | 检查目录权限后点击「继续完成设置」 |
+| `Harness 等待重启` | 远程设置已保存，Harness 尚未载入 | 重新启动 Harness 服务（仅刷新网页无效） |
+| `远程入口已开启` | Mac 端三项配置全部就绪 | 用已接入 tailnet 的设备扫码或复制地址打开 |
+| `请检查公网访问配置` | 检测到直接指向 Harness 的 Funnel 公网配置 | 在 Mac 上核查并关闭对应入口的 Funnel |
+| `无法确认 Funnel 配置` | 状态读取失败或配置无法识别 | 检查本机 Tailscale；切勿把「未知」当作「安全」 |
 
-“检测连接”会从 Mac 本机访问远程 HTTPS 地址。它可以证明本机端配置完成，但不能代替你在手机或另一台电脑上的真实打开测试。
-
-## 几个容易误会的地方
-
-**需要购买域名吗？** 不需要。插件使用这台 Mac 的 Tailscale 地址，不提供自定义域名映射。
-
-**手机可以开关远程入口吗？** 不可以。远程设备可以查看状态，但拿不到带登录令牌的登录地址；管理操作只在 Mac 本机开放。
-
-**为什么没有设备授权列表或确认码？** 设备与人员权限由 Tailscale 管理。插件不再维护另一套容易让人误以为“确认过才有权限”的记录。
-
-**看到二维码，就表示手机一定能连上吗？** 不表示。手机仍需连接 Tailscale，并具备访问这台 Mac 的权限；最终以实际打开并正常使用 Harness 为准。
+> [!TIP]
+> 点击「检测连接」会从 Mac 本机验证远程 HTTPS 地址连通性；即使本机代理将 `*.ts.net` 解析为 fake-ip，插件也会自动改用 Mac 的 Tailscale IP 直连并保留 SNI/证书校验。但本机通过不代表手机端一定可达，最终以另一台设备实际打开为准。
 
 ## 安全和隐私
 
-- 开启和关闭入口同时要求同源请求、Mac 本机访问和本机管理令牌。
-- Tailscale 账号、设备和 ACL 决定哪些设备能到达入口；二维码里的登录令牌只用于建立 Harness 浏览器会话，不改变 Tailscale ACL。
-- 访问二维码由本机的 MIT 许可编码器生成，不调用外部二维码接口，只编码带本次启动登录令牌的远程 HTTPS 地址；令牌只通过 Mac 本机管理接口下发。
-- 登录令牌是 bearer 凭据，扫码页面本身请勿截图外传；服务重启会轮换令牌，已建立的会话继续按 30 天 cookie 有效。
-- 公共健康接口只返回插件可用性和版本，不公开 PID、端口、引擎版本或本机路径。
-- 自动写入当前 Tailscale 地址前最多保留五份配置备份，并采用同步落盘和原子替换。
+- **三重本机校验**：开启和关闭入口同时要求同源请求、Mac 本机访问和本机管理令牌。
+- **本机生成二维码**：使用 MIT 许可的本地编码器直接生成，不调用任何外部二维码 API。
+- **最小暴露健康接口**：公共健康接口仅返回插件可用性与版本号，不暴露 PID、端口、引擎版本或本机路径。
+- **配置安全落盘**：自动写入 Tailscale 地址前最多保留 5 份配置备份，并采用同步落盘与原子替换。
+- **Funnel 探测边界**：依据 Tailscale 的 [Serve 配置定义](https://github.com/tailscale/tailscale/blob/main/ipn/serve.go) 只读检查直接指向 Harness 的 HTTP/TCP 转发与前台配置；「未发现」不覆盖路由器端口映射或其他反向代理，不构成完整安全审计。
 
-公网提示依据 Tailscale 的 [Serve 配置定义](https://github.com/tailscale/tailscale/blob/main/ipn/serve.go)，按域名、端口及直接指向 Harness 的 HTTP/TCP 转发进行匹配，也检查前台配置。它只读配置，不开启 Funnel、不自动关闭其他服务。检测到相关 Funnel 或无法判断时，不展示常规扫码入口；必须先在 Mac 上核查对应配置。
+<details>
+<summary>常见问题解答（FAQ）</summary>
 
-“未发现”只表示没有匹配到这类直接转发配置，不是安全审计，不覆盖路由器端口映射、其他反向代理或间接转发，也不能证明手机端一定可达。
+- **需要购买域名吗？** 不需要。插件直接使用这台 Mac 的 Tailscale 地址（`*.ts.net`），不提供自定义域名映射。
+- **手机可以开关远程入口吗？** 不可以。管理操作与含令牌地址仅在 Mac 本机开放。
+- **为什么没有设备授权列表或确认码？** 设备与人员权限统一由 Tailscale ACL 管理，避免维护第二套容易造成误解的记录。
+- **看到二维码就表示手机一定能连上吗？** 不表示。手机仍需已连接 Tailscale 且满足 ACL 权限。
 
-## 0.7.3 更新
+</details>
 
-- “检测连接”在域名解析被本机代理接管（例如 `*.ts.net` 被解析成 fake-ip）时，自动改用这台 Mac 的 Tailscale IP 直连，并保留 SNI/Host 与证书校验，不再误报失败。
-- 直连验证成功时会明确提示：本机浏览器直接打开域名可能仍受代理影响，远程手机不受影响。
+## 更新记录
 
-## 0.7.2 更新
+### 0.7.3
 
-- 二维码改为携带本次启动的登录令牌：新设备、或手机 cookie 失效后，扫码不再落到 401。
-- 登录令牌只通过 Mac 本机管理接口下发，远程设备拿不到；令牌随 dsh Web 重启轮换。
-- 页面在本机管理令牌就绪后自动刷新二维码，避免首次打开时短暂缺少二维码。
+- 「检测连接」在域名解析被本机代理接管（如 `*.ts.net` 被解析成 fake-ip）时，自动改用 Mac 的 Tailscale IP 直连并保留 SNI/Host 与证书校验，不再误报失败。
+- 直连验证成功时明确提示：本机浏览器直访域名可能仍受代理影响，远程手机不受影响。
 
-## 0.7.1 更新
+<details>
+<summary>历史版本更新（0.7.2 / 0.7.1）</summary>
 
-- 移除手动添加、删除访问域名的界面和接口，保留当前 Tailscale 地址的自动设置，不主动清理已有的其他地址。
-- 修复部分设置失败后没有继续入口的问题；重试只补齐缺失设置。
-- 新增针对 Harness 的 Funnel 公网配置提示；读取失败时显示未知状态，不误报安全。
-- 明确区分“需要重启服务”和“刷新网页”，避免配置已保存却尚未生效时反复尝试。
+#### 0.7.2
+
+- 二维码携带本次启动的登录令牌：新设备或手机 cookie 失效后扫码不再落到 `401`。
+- 登录令牌仅通过 Mac 本机管理接口下发，并随 `dsh` Web 重启轮换。
+- 页面在本机管理令牌就绪后自动刷新二维码，避免首次打开短暂缺码。
+
+#### 0.7.1
+
+- 移除手动增删访问域名的界面和接口，保留当前 Tailscale 地址的自动设置。
+- 修复部分设置失败后缺少继续入口的问题，重试仅补齐缺失设置。
+- 新增针对 Harness 的 Funnel 公网配置警告；读取失败时显示未知状态，不误报安全。
+- 明确区分「需要重启服务」与「刷新网页」。
+
+</details>
 
 ## 开发与发布
 
-运行完整验证：
+运行完整验证套件（覆盖语法、权限边界、路由契约、页面状态、失败重试、隔离 Funnel 配置与临时 `dsh` Web 启动）：
 
 ```bash
 npm test
 ```
 
-验证覆盖语法、权限边界、路由契约、页面状态、配置保存失败后的重试，以及一次临时 dsh Web 启动。Funnel 检测使用隔离配置，覆盖其他服务、不同端口、前台配置和无法解析的状态，不需要把真实服务公开到互联网。
-
-仓库维护者或本机开发者验证通过后，可以部署到受保护的本机开发环境：
+本机受保护开发环境部署（普通用户无需运行）：
 
 ```bash
 node scripts/deploy.mjs
 ```
 
-普通用户不需要运行部署脚本，直接从 npm 安装即可。发布新版本前，可用 `npm pack --dry-run` 检查实际入包文件；仓库也提供 GitHub Trusted Publishing 工作流，需先在 npm 包设置中配置可信发布者。
+发布前可使用 `npm pack --dry-run` 检查入包文件；仓库已配置 GitHub Trusted Publishing 工作流（需在 npm 包设置中配置可信发布者）。
 
 ## 许可
 
